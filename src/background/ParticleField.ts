@@ -12,53 +12,45 @@ interface ConstellationDef {
   lines: [number, number][];
 }
 
-interface ConstellationObj {
-  group: THREE.Group;
-  phase: number;
-  bobAmplitude: number;
-  rotSpeed: number;
-  basePosition: THREE.Vector3;
-}
-
 // Real constellation patterns (simplified coordinates)
 const CONSTELLATION_DEFS: ConstellationDef[] = [
-  // Orion (오리온) — shoulders, belt, feet
+  // Orion
   {
     stars: [
-      [1, 8], [4, 8],           // shoulders
-      [1.5, 5.5], [2.5, 5.5], [3.5, 5.5], // belt
-      [0.5, 2], [4.5, 2],      // feet
-      [2.5, 3.5],               // sword
+      [1, 8], [4, 8],
+      [1.5, 5.5], [2.5, 5.5], [3.5, 5.5],
+      [0.5, 2], [4.5, 2],
+      [2.5, 3.5],
     ],
     lines: [
-      [0, 2], [1, 4],           // shoulders to belt
-      [2, 3], [3, 4],           // belt
-      [2, 5], [4, 6],           // belt to feet
-      [3, 7],                   // sword
+      [0, 2], [1, 4],
+      [2, 3], [3, 4],
+      [2, 5], [4, 6],
+      [3, 7],
     ],
   },
-  // Big Dipper (북두칠성)
+  // Big Dipper
   {
     stars: [
-      [0, 0], [1.8, 0.4], [3.5, 0.2], [5, 1.2], // handle
-      [5.5, 3], [4, 3.8], [5.2, 4.5],             // cup
+      [0, 0], [1.8, 0.4], [3.5, 0.2], [5, 1.2],
+      [5.5, 3], [4, 3.8], [5.2, 4.5],
     ],
     lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 3]],
   },
-  // Cassiopeia (카시오페이아) — W shape
+  // Cassiopeia — W shape
   {
     stars: [[0, 2], [1.5, 0], [3, 1.8], [4.5, 0], [6, 2]],
     lines: [[0, 1], [1, 2], [2, 3], [3, 4]],
   },
-  // Cygnus (백조자리) — cross shape
+  // Cygnus — cross shape
   {
     stars: [
-      [3, 0], [3, 2], [3, 4], [3, 6], // body (vertical)
-      [0.5, 3], [5.5, 3],             // wings
+      [3, 0], [3, 2], [3, 4], [3, 6],
+      [0.5, 3], [5.5, 3],
     ],
     lines: [[0, 1], [1, 2], [2, 3], [4, 2], [2, 5]],
   },
-  // Scorpius (전갈자리) — curved tail
+  // Scorpius — curved tail
   {
     stars: [
       [1, 5], [2, 4.5], [2.5, 3.5], [2.5, 2.5],
@@ -66,19 +58,99 @@ const CONSTELLATION_DEFS: ConstellationDef[] = [
     ],
     lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]],
   },
-  // Lyra (거문고자리) — small diamond with tail
+  // Lyra — small diamond with tail
   {
     stars: [[2, 5], [1, 3], [3, 3], [1.5, 1.5], [2.5, 1.5]],
     lines: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 4]],
   },
-  // Gemini (쌍둥이자리) — two parallel lines
+  // Gemini — two parallel lines
   {
     stars: [
-      [0, 6], [0.5, 4], [1, 2], [1.5, 0],   // left twin
-      [3, 6], [2.5, 4], [2, 2], [1.8, 0.5],  // right twin
+      [0, 6], [0.5, 4], [1, 2], [1.5, 0],
+      [3, 6], [2.5, 4], [2, 2], [1.8, 0.5],
     ],
     lines: [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7], [0, 4], [2, 6]],
   },
+];
+
+/* ---------- Dynamic constellation types ---------- */
+
+const enum ConstellationState {
+  Forming,
+  Active,
+  Fading,
+  Dissolved,
+}
+
+interface LiveConstellation {
+  patternIndex: number;
+  state: ConstellationState;
+  particleIndices: number[];
+  lineSegments: THREE.LineSegments;
+  lineGeometry: THREE.BufferGeometry;
+  lineMaterial: THREE.LineBasicMaterial;
+  anchorPositions: Float32Array;
+  initialMaxDist: number;
+  opacity: number;
+  formStartTime: number;
+  fadeStartTime: number;
+  spreadRatio: number;
+  baseColor: THREE.Color;
+  starBoost: number;
+  lineProgress: number[];
+  lineFlashTimers: number[];
+}
+
+interface ScrollParallaxConfig {
+  impulse: number;
+  damping: number;
+  yClamp: number;
+  pitchClamp: number;
+  deltaClamp: number;
+}
+
+/* ---------- Tuning constants ---------- */
+
+const CLUSTER_SEARCH_INTERVAL = 3.0;
+const LINE_DRAW_DURATION = 0.5;
+const LINE_STAGGER = 0.4;
+const FLASH_DURATION = 0.3;
+const FLASH_INTENSITY = 5.0;
+const FADE_DURATION = 1.5;
+const SPREAD_FADE_START = 1.8;
+const SPREAD_DISSOLVE = 2.5;
+const REPULSION_FORCE = 0.03;
+const STAR_BOOST_MAX = 2.5;
+const GRID_CELL_SIZE = 80;
+const GRID_SIZE = 15;
+const WRAP_DETECT_DIST = 400;
+const SCROLL_LERP = 0.12;
+const SCROLL_DESKTOP_CONFIG: ScrollParallaxConfig = {
+  impulse: 0.12,
+  damping: 0.9,
+  yClamp: 18,
+  pitchClamp: 0.02,
+  deltaClamp: 120,
+};
+const SCROLL_MOBILE_CONFIG: ScrollParallaxConfig = {
+  impulse: 0.07,
+  damping: 0.93,
+  yClamp: 9,
+  pitchClamp: 0.01,
+  deltaClamp: 80,
+};
+const REDUCED_MOTION_SCALE = 0.5;
+
+/* ---------- Color palette (cyan → purple cycle) ---------- */
+
+const PALETTE_COLORS = [
+  new THREE.Color(0.1, 1.0, 1.2),
+  new THREE.Color(0.3, 0.8, 1.5),
+  new THREE.Color(0.5, 0.5, 1.8),
+  new THREE.Color(0.8, 0.3, 1.5),
+  new THREE.Color(0.6, 0.3, 1.0),
+  new THREE.Color(0.2, 1.2, 1.0),
+  new THREE.Color(1.0, 0.4, 1.2),
 ];
 
 export class ParticleField {
@@ -87,7 +159,6 @@ export class ParticleField {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private particles!: THREE.Points;
-  private constellations: ConstellationObj[] = [];
   private particleCount: number;
   private particlePositions!: Float32Array;
   private particleVelocities!: Float32Array;
@@ -95,6 +166,7 @@ export class ParticleField {
   private particleSpeeds!: Float32Array;
   private baseOpacities!: Float32Array;
   private colors!: Float32Array;
+  private particleBoost!: Float32Array;
   private circleTexture!: THREE.Texture;
   private mouse = { x: 0, y: 0 };
   private targetMouse = { x: 0, y: 0 };
@@ -105,11 +177,25 @@ export class ParticleField {
   private disposed = false;
   private time = 0;
 
+  /* Dynamic constellations */
+  private liveConstellations: LiveConstellation[] = [];
+  private usedParticleSet = new Set<number>();
+  private lastClusterSearch = 0;
+  private maxConstellations: number;
+  private colorCycleIndex = 0;
+  private scrollConfig: ScrollParallaxConfig = { ...SCROLL_DESKTOP_CONFIG };
+  private scrollTargetYOffset = 0;
+  private scrollCurrentYOffset = 0;
+  private scrollTargetPitch = 0;
+  private scrollCurrentPitch = 0;
+  private lastScrollY = 0;
+
   constructor(options: ParticleFieldOptions) {
     const isMobile = window.innerWidth < 768;
     this.particleCount = isMobile
       ? 800
       : Math.min(this.getAdaptiveCount(), 5000);
+    this.maxConstellations = isMobile ? 2 : 4;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: options.canvas,
@@ -144,9 +230,10 @@ export class ParticleField {
 
     this.spotlightEl = document.getElementById("mouse-spotlight");
     this.circleTexture = this.createCircleTexture();
+    this.lastScrollY = window.scrollY || window.pageYOffset || 0;
+    this.updateScrollConfig();
 
     this.initParticles();
-    this.initConstellations(isMobile);
     this.bindEvents();
     this.animate();
   }
@@ -177,6 +264,8 @@ export class ParticleField {
     this.particleSpeeds = new Float32Array(count);
     this.baseOpacities = new Float32Array(count);
     this.colors = new Float32Array(count * 3);
+    this.particleBoost = new Float32Array(count);
+    this.particleBoost.fill(1.0);
 
     const spread = 1200;
 
@@ -256,151 +345,468 @@ export class ParticleField {
     return texture;
   }
 
-  private initConstellations(isMobile: boolean): void {
-    const count = isMobile ? 3 : 5;
-    const scale = 25;
+  /* ========== Dynamic Constellation System ========== */
 
-    // Well-spaced positions for constellations
-    const positions: THREE.Vector3[] = [];
-    const minDist = 280;
+  private findCluster(): void {
+    const activeCount = this.liveConstellations.filter(
+      (lc) => lc.state !== ConstellationState.Dissolved,
+    ).length;
+    if (activeCount >= this.maxConstellations) return;
 
-    for (let ci = 0; ci < count; ci++) {
-      const def = CONSTELLATION_DEFS[ci % CONSTELLATION_DEFS.length];
+    // Build 2D spatial hash grid (XY plane only)
+    const grid = new Map<number, number[]>();
+    const halfGrid = (GRID_SIZE * GRID_CELL_SIZE) / 2;
 
-      let pos: THREE.Vector3;
-      let attempts = 0;
-      do {
-        pos = new THREE.Vector3(
-          (Math.random() - 0.5) * 800,
-          (Math.random() - 0.5) * 600,
-          (Math.random() - 0.5) * 200 - 100,
-        );
-        attempts++;
-      } while (
-        attempts < 50 &&
-        positions.some((p) => p.distanceTo(pos) < minDist)
-      );
-      positions.push(pos);
-
-      const group = new THREE.Group();
-      group.position.copy(pos);
-      group.rotation.z = Math.random() * Math.PI * 2;
-
-      // Center constellation around its own origin
-      let cx = 0;
-      let cy = 0;
-      for (const [sx, sy] of def.stars) {
-        cx += sx;
-        cy += sy;
+    for (let i = 0; i < this.particleCount; i++) {
+      if (this.usedParticleSet.has(i)) continue;
+      const x = this.particlePositions[i * 3];
+      const y = this.particlePositions[i * 3 + 1];
+      // Only consider particles within grid bounds
+      if (
+        x < -halfGrid || x > halfGrid ||
+        y < -halfGrid || y > halfGrid
+      ) continue;
+      const gx = Math.floor((x + halfGrid) / GRID_CELL_SIZE);
+      const gy = Math.floor((y + halfGrid) / GRID_CELL_SIZE);
+      const key = gy * GRID_SIZE + gx;
+      let cell = grid.get(key);
+      if (!cell) {
+        cell = [];
+        grid.set(key, cell);
       }
-      cx /= def.stars.length;
-      cy /= def.stars.length;
-
-      const starPositions: THREE.Vector3[] = [];
-      const starPosArray = new Float32Array(def.stars.length * 3);
-      const starColorArray = new Float32Array(def.stars.length * 3);
-
-      // Color per constellation: gradient from cyan to purple
-      const ct = ci / Math.max(count - 1, 1);
-      const starColor = new THREE.Color().lerpColors(
-        new THREE.Color(0.3, 2.0, 2.5),
-        new THREE.Color(1.2, 0.6, 2.0),
-        ct,
-      );
-      const lineColor = new THREE.Color().lerpColors(
-        new THREE.Color(0.1, 1.0, 1.2),
-        new THREE.Color(0.6, 0.3, 1.0),
-        ct,
-      );
-
-      for (let si = 0; si < def.stars.length; si++) {
-        const [sx, sy] = def.stars[si];
-        const x = (sx - cx) * scale;
-        const y = (sy - cy) * scale;
-        const z = (Math.random() - 0.5) * 8;
-
-        starPosArray[si * 3] = x;
-        starPosArray[si * 3 + 1] = y;
-        starPosArray[si * 3 + 2] = z;
-        starPositions.push(new THREE.Vector3(x, y, z));
-
-        starColorArray[si * 3] = starColor.r;
-        starColorArray[si * 3 + 1] = starColor.g;
-        starColorArray[si * 3 + 2] = starColor.b;
-      }
-
-      // Constellation star points (brighter & larger than background)
-      const starGeo = new THREE.BufferGeometry();
-      starGeo.setAttribute(
-        "position",
-        new THREE.BufferAttribute(starPosArray, 3),
-      );
-      starGeo.setAttribute(
-        "color",
-        new THREE.BufferAttribute(starColorArray, 3),
-      );
-
-      const starMat = new THREE.PointsMaterial({
-        size: 4,
-        sizeAttenuation: true,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
-        map: this.circleTexture,
-      });
-
-      group.add(new THREE.Points(starGeo, starMat));
-
-      // Connection lines
-      const lineVerts: number[] = [];
-      const lineColorVerts: number[] = [];
-
-      for (const [from, to] of def.lines) {
-        const fp = starPositions[from];
-        const tp = starPositions[to];
-        lineVerts.push(fp.x, fp.y, fp.z, tp.x, tp.y, tp.z);
-        lineColorVerts.push(
-          lineColor.r, lineColor.g, lineColor.b,
-          lineColor.r, lineColor.g, lineColor.b,
-        );
-      }
-
-      const lineGeo = new THREE.BufferGeometry();
-      lineGeo.setAttribute(
-        "position",
-        new THREE.BufferAttribute(new Float32Array(lineVerts), 3),
-      );
-      lineGeo.setAttribute(
-        "color",
-        new THREE.BufferAttribute(new Float32Array(lineColorVerts), 3),
-      );
-
-      const lineMat = new THREE.LineBasicMaterial({
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.15,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      });
-
-      group.add(new THREE.LineSegments(lineGeo, lineMat));
-
-      this.scene.add(group);
-
-      this.constellations.push({
-        group,
-        phase: Math.random() * Math.PI * 2,
-        bobAmplitude: 5 + Math.random() * 10,
-        rotSpeed: (Math.random() - 0.5) * 0.008,
-        basePosition: pos.clone(),
-      });
+      cell.push(i);
     }
+
+    // Determine which patterns are currently unused
+    const usedPatterns = new Set(
+      this.liveConstellations
+        .filter((lc) => lc.state !== ConstellationState.Dissolved)
+        .map((lc) => lc.patternIndex),
+    );
+
+    // Try to find a suitable 2x2 block
+    const candidates: { gx: number; gy: number; particles: number[] }[] = [];
+
+    for (let gy = 0; gy < GRID_SIZE - 1; gy++) {
+      for (let gx = 0; gx < GRID_SIZE - 1; gx++) {
+        const collected: number[] = [];
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const key = (gy + dy) * GRID_SIZE + (gx + dx);
+            const cell = grid.get(key);
+            if (cell) {
+              for (const idx of cell) collected.push(idx);
+            }
+          }
+        }
+        // Need at least 5 particles for smallest constellation
+        if (collected.length >= 5) {
+          candidates.push({ gx, gy, particles: collected });
+        }
+      }
+    }
+
+    if (candidates.length === 0) return;
+
+    // Pick a random candidate block
+    const block = candidates[Math.floor(Math.random() * candidates.length)];
+
+    // Pick a pattern, preferring unused ones
+    let patternIndex = -1;
+    const unusedPatterns: number[] = [];
+    for (let i = 0; i < CONSTELLATION_DEFS.length; i++) {
+      if (!usedPatterns.has(i)) unusedPatterns.push(i);
+    }
+    if (unusedPatterns.length > 0) {
+      patternIndex =
+        unusedPatterns[Math.floor(Math.random() * unusedPatterns.length)];
+    } else {
+      patternIndex = Math.floor(Math.random() * CONSTELLATION_DEFS.length);
+    }
+
+    const def = CONSTELLATION_DEFS[patternIndex];
+    const needed = def.stars.length;
+    if (block.particles.length < needed) return;
+
+    // Find seed particle (closest to block center)
+    const blockCenterX =
+      (block.gx + 1) * GRID_CELL_SIZE - halfGrid;
+    const blockCenterY =
+      (block.gy + 1) * GRID_CELL_SIZE - halfGrid;
+
+    block.particles.sort((a, b) => {
+      const ax = this.particlePositions[a * 3] - blockCenterX;
+      const ay = this.particlePositions[a * 3 + 1] - blockCenterY;
+      const bx = this.particlePositions[b * 3] - blockCenterX;
+      const by = this.particlePositions[b * 3 + 1] - blockCenterY;
+      return ax * ax + ay * ay - (bx * bx + by * by);
+    });
+
+    // Pick the closest N particles
+    const chosen = block.particles.slice(0, needed);
+
+    // Mark particles as used
+    for (const idx of chosen) this.usedParticleSet.add(idx);
+
+    // Snapshot anchor positions and compute initialMaxDist
+    const anchors = new Float32Array(needed * 3);
+    for (let i = 0; i < needed; i++) {
+      const idx = chosen[i];
+      anchors[i * 3] = this.particlePositions[idx * 3];
+      anchors[i * 3 + 1] = this.particlePositions[idx * 3 + 1];
+      anchors[i * 3 + 2] = this.particlePositions[idx * 3 + 2];
+    }
+
+    let maxDist = 0;
+    for (let i = 0; i < needed; i++) {
+      for (let j = i + 1; j < needed; j++) {
+        const dx = anchors[i * 3] - anchors[j * 3];
+        const dy = anchors[i * 3 + 1] - anchors[j * 3 + 1];
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d > maxDist) maxDist = d;
+      }
+    }
+    if (maxDist < 1) maxDist = 1;
+
+    // Create line geometry
+    const lineCount = def.lines.length;
+    const linePositions = new Float32Array(lineCount * 2 * 3);
+    const lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(linePositions, 3),
+    );
+
+    const baseColor =
+      PALETTE_COLORS[this.colorCycleIndex % PALETTE_COLORS.length];
+    this.colorCycleIndex++;
+
+    const lineMaterial = new THREE.LineBasicMaterial({
+      color: baseColor,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    const lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
+    this.scene.add(lineSegments);
+
+    const lc: LiveConstellation = {
+      patternIndex,
+      state: ConstellationState.Forming,
+      particleIndices: chosen,
+      lineSegments,
+      lineGeometry,
+      lineMaterial,
+      anchorPositions: anchors,
+      initialMaxDist: maxDist,
+      opacity: 0,
+      formStartTime: this.time,
+      fadeStartTime: 0,
+      spreadRatio: 1,
+      baseColor: baseColor.clone(),
+      starBoost: STAR_BOOST_MAX,
+      lineProgress: new Array(lineCount).fill(0),
+      lineFlashTimers: new Array(lineCount).fill(-1),
+    };
+
+    this.liveConstellations.push(lc);
+  }
+
+  private updateConstellations(dt: number): void {
+    // Reset particle boost
+    this.particleBoost.fill(1.0);
+
+    for (let ci = this.liveConstellations.length - 1; ci >= 0; ci--) {
+      const lc = this.liveConstellations[ci];
+
+      if (lc.state === ConstellationState.Dissolved) {
+        this.liveConstellations.splice(ci, 1);
+        continue;
+      }
+
+      const def = CONSTELLATION_DEFS[lc.patternIndex];
+
+      // --- State machine ---
+
+      if (lc.state === ConstellationState.Forming) {
+        this.updateForming(lc, def);
+      } else if (lc.state === ConstellationState.Active) {
+        this.updateActive(lc);
+      } else if (lc.state === ConstellationState.Fading) {
+        this.updateFading(lc);
+      }
+
+      // Apply star brightness boost
+      const boostVal = 1.0 + (lc.starBoost - 1.0) * lc.opacity;
+      for (const idx of lc.particleIndices) {
+        this.particleBoost[idx] = Math.max(this.particleBoost[idx], boostVal);
+      }
+
+      // Update line positions from current particle positions
+      this.updateLinePositions(lc, def);
+
+      // Update material opacity with flash effect
+      let maxFlash = 1.0;
+      for (let li = 0; li < lc.lineFlashTimers.length; li++) {
+        if (lc.lineFlashTimers[li] > 0) {
+          const flashRatio = lc.lineFlashTimers[li] / FLASH_DURATION;
+          const flashMul = 1.0 + (FLASH_INTENSITY - 1.0) * flashRatio;
+          if (flashMul > maxFlash) maxFlash = flashMul;
+          lc.lineFlashTimers[li] -= dt;
+        }
+      }
+      lc.lineMaterial.opacity = lc.opacity * 0.15 * maxFlash;
+    }
+  }
+
+  private updateForming(
+    lc: LiveConstellation,
+    def: ConstellationDef,
+  ): void {
+    const elapsed = this.time - lc.formStartTime;
+    const totalLines = def.lines.length;
+    let allDone = true;
+
+    for (let li = 0; li < totalLines; li++) {
+      const lineStartTime = li * LINE_STAGGER;
+      const lineElapsed = elapsed - lineStartTime;
+      const wasComplete = lc.lineProgress[li] >= 1.0;
+
+      if (lineElapsed <= 0) {
+        lc.lineProgress[li] = 0;
+        allDone = false;
+        continue;
+      }
+
+      const progress = Math.min(lineElapsed / LINE_DRAW_DURATION, 1.0);
+      lc.lineProgress[li] = progress;
+
+      // Trigger flash once when the line first reaches the endpoint.
+      if (!wasComplete && progress >= 1.0) {
+        lc.lineFlashTimers[li] = FLASH_DURATION;
+      }
+
+      if (progress < 1.0) allDone = false;
+    }
+
+    // Fade in opacity during forming
+    const formDuration = (totalLines - 1) * LINE_STAGGER + LINE_DRAW_DURATION;
+    lc.opacity = Math.min(elapsed / Math.min(formDuration, 1.0), 1.0);
+
+    // Check if all flashes finished too
+    if (allDone) {
+      let flashesDone = true;
+      for (let li = 0; li < totalLines; li++) {
+        if (lc.lineFlashTimers[li] > 0) {
+          flashesDone = false;
+          break;
+        }
+      }
+      if (flashesDone) {
+        lc.state = ConstellationState.Active;
+      }
+    }
+  }
+
+  private updateActive(lc: LiveConstellation): void {
+    // Apply repulsion force between constellation particles
+    const indices = lc.particleIndices;
+    const n = indices.length;
+
+    // Compute center
+    let cx = 0;
+    let cy = 0;
+    for (let i = 0; i < n; i++) {
+      const idx = indices[i];
+      cx += this.particlePositions[idx * 3];
+      cy += this.particlePositions[idx * 3 + 1];
+    }
+    cx /= n;
+    cy /= n;
+
+    // Push each particle away from center
+    for (let i = 0; i < n; i++) {
+      const idx = indices[i];
+      const i3 = idx * 3;
+      const dx = this.particlePositions[i3] - cx;
+      const dy = this.particlePositions[i3 + 1] - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0.1) {
+        // Particle velocities are treated as per-frame deltas in this file,
+        // so repulsion should use the same unit scale (not dt-scaled).
+        this.particleVelocities[i3] += (dx / dist) * REPULSION_FORCE;
+        this.particleVelocities[i3 + 1] += (dy / dist) * REPULSION_FORCE;
+      }
+    }
+
+    // Compute spread ratio
+    this.computeSpread(lc);
+
+    if (lc.spreadRatio >= SPREAD_FADE_START) {
+      lc.state = ConstellationState.Fading;
+      lc.fadeStartTime = this.time;
+    }
+
+    // Check for wrap-around
+    if (this.detectWrap(lc)) {
+      lc.state = ConstellationState.Fading;
+      lc.fadeStartTime = this.time;
+    }
+
+    lc.opacity = 1.0;
+  }
+
+  private updateFading(lc: LiveConstellation): void {
+    this.computeSpread(lc);
+
+    // Spread-based opacity
+    const spreadOpacity =
+      lc.spreadRatio >= SPREAD_DISSOLVE
+        ? 0
+        : lc.spreadRatio <= SPREAD_FADE_START
+          ? 1
+          : 1 -
+            (lc.spreadRatio - SPREAD_FADE_START) /
+              (SPREAD_DISSOLVE - SPREAD_FADE_START);
+
+    // Time-based opacity
+    const timeElapsed = this.time - lc.fadeStartTime;
+    const timeOpacity = Math.max(1 - timeElapsed / FADE_DURATION, 0);
+
+    lc.opacity = Math.min(spreadOpacity, timeOpacity);
+
+    if (lc.opacity <= 0) {
+      this.dissolveConstellation(lc);
+    }
+  }
+
+  private computeSpread(lc: LiveConstellation): void {
+    let totalDisp = 0;
+    const n = lc.particleIndices.length;
+
+    for (let i = 0; i < n; i++) {
+      const idx = lc.particleIndices[i];
+      const dx =
+        this.particlePositions[idx * 3] - lc.anchorPositions[i * 3];
+      const dy =
+        this.particlePositions[idx * 3 + 1] - lc.anchorPositions[i * 3 + 1];
+      totalDisp += Math.sqrt(dx * dx + dy * dy);
+    }
+
+    const avgDisp = totalDisp / n;
+    lc.spreadRatio = 1 + avgDisp / lc.initialMaxDist;
+  }
+
+  private detectWrap(lc: LiveConstellation): boolean {
+    for (let i = 0; i < lc.particleIndices.length; i++) {
+      const idx = lc.particleIndices[i];
+      const dx = Math.abs(
+        this.particlePositions[idx * 3] - lc.anchorPositions[i * 3],
+      );
+      const dy = Math.abs(
+        this.particlePositions[idx * 3 + 1] - lc.anchorPositions[i * 3 + 1],
+      );
+      if (dx > WRAP_DETECT_DIST || dy > WRAP_DETECT_DIST) return true;
+    }
+    return false;
+  }
+
+  private dissolveConstellation(lc: LiveConstellation): void {
+    lc.state = ConstellationState.Dissolved;
+
+    // Release particles
+    for (const idx of lc.particleIndices) {
+      this.usedParticleSet.delete(idx);
+    }
+
+    // Cleanup GPU resources
+    this.scene.remove(lc.lineSegments);
+    lc.lineGeometry.dispose();
+    lc.lineMaterial.dispose();
+  }
+
+  private updateLinePositions(
+    lc: LiveConstellation,
+    def: ConstellationDef,
+  ): void {
+    const posAttr = lc.lineGeometry.attributes
+      .position as THREE.BufferAttribute;
+    const arr = posAttr.array as Float32Array;
+
+    for (let li = 0; li < def.lines.length; li++) {
+      const [fromStar, toStar] = def.lines[li];
+      const fromIdx = lc.particleIndices[fromStar];
+      const toIdx = lc.particleIndices[toStar];
+
+      const fx = this.particlePositions[fromIdx * 3];
+      const fy = this.particlePositions[fromIdx * 3 + 1];
+      const fz = this.particlePositions[fromIdx * 3 + 2];
+
+      const tx = this.particlePositions[toIdx * 3];
+      const ty = this.particlePositions[toIdx * 3 + 1];
+      const tz = this.particlePositions[toIdx * 3 + 2];
+
+      const progress = lc.lineProgress[li];
+
+      const v = li * 6; // 2 vertices * 3 components
+      arr[v] = fx;
+      arr[v + 1] = fy;
+      arr[v + 2] = fz;
+
+      // Second vertex lerps from "from" to "to" based on progress
+      arr[v + 3] = fx + (tx - fx) * progress;
+      arr[v + 4] = fy + (ty - fy) * progress;
+      arr[v + 5] = fz + (tz - fz) * progress;
+    }
+
+    posAttr.needsUpdate = true;
+  }
+
+  /* ========== End Dynamic Constellation System ========== */
+
+  private updateScrollConfig(): void {
+    const isMobile = window.innerWidth < 768;
+    const prefersReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const baseConfig = isMobile ? SCROLL_MOBILE_CONFIG : SCROLL_DESKTOP_CONFIG;
+    const motionScale = prefersReducedMotion ? REDUCED_MOTION_SCALE : 1.0;
+
+    this.scrollConfig = {
+      impulse: baseConfig.impulse * motionScale,
+      damping: baseConfig.damping,
+      yClamp: baseConfig.yClamp * motionScale,
+      pitchClamp: baseConfig.pitchClamp * motionScale,
+      deltaClamp: baseConfig.deltaClamp,
+    };
+
+    this.scrollTargetYOffset = THREE.MathUtils.clamp(
+      this.scrollTargetYOffset,
+      -this.scrollConfig.yClamp,
+      this.scrollConfig.yClamp,
+    );
+    this.scrollCurrentYOffset = THREE.MathUtils.clamp(
+      this.scrollCurrentYOffset,
+      -this.scrollConfig.yClamp,
+      this.scrollConfig.yClamp,
+    );
+    this.scrollTargetPitch = THREE.MathUtils.clamp(
+      this.scrollTargetPitch,
+      -this.scrollConfig.pitchClamp,
+      this.scrollConfig.pitchClamp,
+    );
+    this.scrollCurrentPitch = THREE.MathUtils.clamp(
+      this.scrollCurrentPitch,
+      -this.scrollConfig.pitchClamp,
+      this.scrollConfig.pitchClamp,
+    );
   }
 
   private bindEvents(): void {
     window.addEventListener("mousemove", this.onMouseMove);
+    window.addEventListener("scroll", this.onScroll, { passive: true });
     window.addEventListener("resize", this.onResize);
 
     const canvas = this.renderer.domElement;
@@ -415,6 +821,39 @@ export class ParticleField {
     this.targetMouseScreen.y = e.clientY;
   };
 
+  private onScroll = (): void => {
+    const nextY = window.scrollY || window.pageYOffset || 0;
+    let delta = nextY - this.lastScrollY;
+    this.lastScrollY = nextY;
+
+    if (delta === 0) return;
+
+    delta = THREE.MathUtils.clamp(
+      delta,
+      -this.scrollConfig.deltaClamp,
+      this.scrollConfig.deltaClamp,
+    );
+
+    const nextTargetOffset =
+      this.scrollTargetYOffset - delta * this.scrollConfig.impulse;
+    this.scrollTargetYOffset = THREE.MathUtils.clamp(
+      nextTargetOffset,
+      -this.scrollConfig.yClamp,
+      this.scrollConfig.yClamp,
+    );
+
+    const normalized =
+      this.scrollConfig.yClamp > 0
+        ? this.scrollTargetYOffset / this.scrollConfig.yClamp
+        : 0;
+
+    this.scrollTargetPitch = THREE.MathUtils.clamp(
+      normalized * this.scrollConfig.pitchClamp,
+      -this.scrollConfig.pitchClamp,
+      this.scrollConfig.pitchClamp,
+    );
+  };
+
   private onResize = (): void => {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -422,6 +861,7 @@ export class ParticleField {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    this.updateScrollConfig();
   };
 
   private onContextLost = (e: Event): void => {
@@ -437,7 +877,8 @@ export class ParticleField {
     if (this.disposed) return;
     this.rafId = requestAnimationFrame(this.animate);
 
-    this.time += 0.016;
+    const dt = 0.016;
+    this.time += dt;
 
     this.mouse.x += (this.targetMouse.x - this.mouse.x) * 0.05;
     this.mouse.y += (this.targetMouse.y - this.mouse.y) * 0.05;
@@ -445,6 +886,12 @@ export class ParticleField {
       (this.targetMouseScreen.x - this.mouseScreen.x) * 0.08;
     this.mouseScreen.y +=
       (this.targetMouseScreen.y - this.mouseScreen.y) * 0.08;
+    this.scrollTargetYOffset *= this.scrollConfig.damping;
+    this.scrollTargetPitch *= this.scrollConfig.damping;
+    this.scrollCurrentYOffset +=
+      (this.scrollTargetYOffset - this.scrollCurrentYOffset) * SCROLL_LERP;
+    this.scrollCurrentPitch +=
+      (this.scrollTargetPitch - this.scrollCurrentPitch) * SCROLL_LERP;
 
     // Spotlight
     if (this.spotlightEl) {
@@ -456,6 +903,15 @@ export class ParticleField {
         rgba(10, 10, 15, 0.9) 100%
       )`;
     }
+
+    // Cluster search
+    if (this.time - this.lastClusterSearch >= CLUSTER_SEARCH_INTERVAL) {
+      this.lastClusterSearch = this.time;
+      this.findCluster();
+    }
+
+    // Update dynamic constellations (also sets particleBoost)
+    this.updateConstellations(dt);
 
     // Update particles
     const bound = 600;
@@ -477,6 +933,7 @@ export class ParticleField {
       else if (this.particlePositions[i3 + 1] < -bound)
         this.particlePositions[i3 + 1] = bound;
 
+      const boost = this.particleBoost[i];
       const twinkle =
         0.3 +
         0.7 *
@@ -487,9 +944,9 @@ export class ParticleField {
                 this.time * this.particleSpeeds[i] + this.particlePhases[i],
               ));
 
-      colorAttr.array[i3] = this.colors[i3] * twinkle;
-      colorAttr.array[i3 + 1] = this.colors[i3 + 1] * twinkle;
-      colorAttr.array[i3 + 2] = this.colors[i3 + 2] * twinkle;
+      colorAttr.array[i3] = this.colors[i3] * twinkle * boost;
+      colorAttr.array[i3 + 1] = this.colors[i3 + 1] * twinkle * boost;
+      colorAttr.array[i3 + 2] = this.colors[i3 + 2] * twinkle * boost;
     }
 
     (
@@ -497,21 +954,12 @@ export class ParticleField {
     ).needsUpdate = true;
     colorAttr.needsUpdate = true;
 
-    // Update constellations — gentle drift & slow rotation
-    for (const c of this.constellations) {
-      c.group.position.x =
-        c.basePosition.x +
-        Math.sin(this.time * 0.3 + c.phase) * c.bobAmplitude;
-      c.group.position.y =
-        c.basePosition.y +
-        Math.sin(this.time * 0.2 + c.phase * 1.3) * c.bobAmplitude;
-      c.group.rotation.z += c.rotSpeed * 0.016;
-    }
-
     // Camera parallax
     this.camera.position.x = this.mouse.x * 60;
-    this.camera.position.y = this.mouse.y * 40;
-    this.camera.lookAt(0, 0, 0);
+    this.camera.position.y = this.mouse.y * 40 + this.scrollCurrentYOffset;
+    const lookAtYOffset =
+      Math.tan(this.scrollCurrentPitch) * this.camera.position.z;
+    this.camera.lookAt(0, lookAtYOffset, 0);
 
     this.composer.render();
   };
@@ -520,6 +968,7 @@ export class ParticleField {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     window.removeEventListener("mousemove", this.onMouseMove);
+    window.removeEventListener("scroll", this.onScroll);
     window.removeEventListener("resize", this.onResize);
 
     const canvas = this.renderer.domElement;
@@ -529,14 +978,16 @@ export class ParticleField {
     this.particles.geometry.dispose();
     (this.particles.material as THREE.Material).dispose();
 
-    for (const c of this.constellations) {
-      c.group.traverse((obj) => {
-        if (obj instanceof THREE.Points || obj instanceof THREE.LineSegments) {
-          obj.geometry.dispose();
-          (obj.material as THREE.Material).dispose();
-        }
-      });
+    // Cleanup live constellations
+    for (const lc of this.liveConstellations) {
+      if (lc.state !== ConstellationState.Dissolved) {
+        this.scene.remove(lc.lineSegments);
+        lc.lineGeometry.dispose();
+        lc.lineMaterial.dispose();
+      }
     }
+    this.liveConstellations.length = 0;
+    this.usedParticleSet.clear();
 
     this.circleTexture.dispose();
     this.composer.dispose();
