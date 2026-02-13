@@ -7,22 +7,79 @@ interface ParticleFieldOptions {
   canvas: HTMLCanvasElement;
 }
 
-interface FloatingShape {
-  mesh: THREE.LineSegments;
-  rotSpeed: THREE.Vector3;
-  basePosition: THREE.Vector3;
-  phase: number;
-  bobAmplitude: number;
-  parentIdx?: number; // orbit rings track their parent nucleus
+interface ConstellationDef {
+  stars: [number, number][];
+  lines: [number, number][];
 }
 
-interface Synapse {
-  line: THREE.Line;
-  fromIdx: number;
-  toIdx: number;
-  flowPhase: number;
-  flowSpeed: number;
+interface ConstellationObj {
+  group: THREE.Group;
+  phase: number;
+  bobAmplitude: number;
+  rotSpeed: number;
+  basePosition: THREE.Vector3;
 }
+
+// Real constellation patterns (simplified coordinates)
+const CONSTELLATION_DEFS: ConstellationDef[] = [
+  // Orion (오리온) — shoulders, belt, feet
+  {
+    stars: [
+      [1, 8], [4, 8],           // shoulders
+      [1.5, 5.5], [2.5, 5.5], [3.5, 5.5], // belt
+      [0.5, 2], [4.5, 2],      // feet
+      [2.5, 3.5],               // sword
+    ],
+    lines: [
+      [0, 2], [1, 4],           // shoulders to belt
+      [2, 3], [3, 4],           // belt
+      [2, 5], [4, 6],           // belt to feet
+      [3, 7],                   // sword
+    ],
+  },
+  // Big Dipper (북두칠성)
+  {
+    stars: [
+      [0, 0], [1.8, 0.4], [3.5, 0.2], [5, 1.2], // handle
+      [5.5, 3], [4, 3.8], [5.2, 4.5],             // cup
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 3]],
+  },
+  // Cassiopeia (카시오페이아) — W shape
+  {
+    stars: [[0, 2], [1.5, 0], [3, 1.8], [4.5, 0], [6, 2]],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4]],
+  },
+  // Cygnus (백조자리) — cross shape
+  {
+    stars: [
+      [3, 0], [3, 2], [3, 4], [3, 6], // body (vertical)
+      [0.5, 3], [5.5, 3],             // wings
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [4, 2], [2, 5]],
+  },
+  // Scorpius (전갈자리) — curved tail
+  {
+    stars: [
+      [1, 5], [2, 4.5], [2.5, 3.5], [2.5, 2.5],
+      [3, 1.5], [4, 1], [5, 1.5], [5.5, 2.5],
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]],
+  },
+  // Lyra (거문고자리) — small diamond with tail
+  {
+    stars: [[2, 5], [1, 3], [3, 3], [1.5, 1.5], [2.5, 1.5]],
+    lines: [[0, 1], [0, 2], [1, 3], [2, 4], [3, 4]],
+  },
+  // Gemini (쌍둥이자리) — two parallel lines
+  {
+    stars: [
+      [0, 6], [0.5, 4], [1, 2], [1.5, 0],   // left twin
+      [3, 6], [2.5, 4], [2, 2], [1.8, 0.5],  // right twin
+    ],
+    lines: [[0, 1], [1, 2], [2, 3], [4, 5], [5, 6], [6, 7], [0, 4], [2, 6]],
+  },
+];
 
 export class ParticleField {
   private renderer: THREE.WebGLRenderer;
@@ -30,8 +87,7 @@ export class ParticleField {
   private scene: THREE.Scene;
   private camera: THREE.PerspectiveCamera;
   private particles!: THREE.Points;
-  private shapes: FloatingShape[] = [];
-  private synapses: Synapse[] = [];
+  private constellations: ConstellationObj[] = [];
   private particleCount: number;
   private particlePositions!: Float32Array;
   private particleVelocities!: Float32Array;
@@ -39,6 +95,7 @@ export class ParticleField {
   private particleSpeeds!: Float32Array;
   private baseOpacities!: Float32Array;
   private colors!: Float32Array;
+  private circleTexture!: THREE.Texture;
   private mouse = { x: 0, y: 0 };
   private targetMouse = { x: 0, y: 0 };
   private mouseScreen = { x: 0.5, y: 0.5 };
@@ -50,7 +107,9 @@ export class ParticleField {
 
   constructor(options: ParticleFieldOptions) {
     const isMobile = window.innerWidth < 768;
-    this.particleCount = isMobile ? 800 : Math.min(this.getAdaptiveCount(), 5000);
+    this.particleCount = isMobile
+      ? 800
+      : Math.min(this.getAdaptiveCount(), 5000);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: options.canvas,
@@ -84,9 +143,10 @@ export class ParticleField {
     this.composer.addPass(bloomPass);
 
     this.spotlightEl = document.getElementById("mouse-spotlight");
+    this.circleTexture = this.createCircleTexture();
 
     this.initParticles();
-    this.initShapes(isMobile);
+    this.initConstellations(isMobile);
     this.bindEvents();
     this.animate();
   }
@@ -167,7 +227,7 @@ export class ParticleField {
       opacity: 0.7,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      map: this.createCircleTexture(),
+      map: this.circleTexture,
     });
 
     this.particles = new THREE.Points(geometry, material);
@@ -196,185 +256,146 @@ export class ParticleField {
     return texture;
   }
 
-  private createRingGeometry(segments = 64): THREE.BufferGeometry {
-    const positions = new Float32Array(segments * 6);
-    for (let i = 0; i < segments; i++) {
-      const a1 = (i / segments) * Math.PI * 2;
-      const a2 = ((i + 1) / segments) * Math.PI * 2;
-      const idx = i * 6;
-      positions[idx] = Math.cos(a1);
-      positions[idx + 1] = Math.sin(a1);
-      positions[idx + 2] = 0;
-      positions[idx + 3] = Math.cos(a2);
-      positions[idx + 4] = Math.sin(a2);
-      positions[idx + 5] = 0;
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    return geo;
-  }
+  private initConstellations(isMobile: boolean): void {
+    const count = isMobile ? 3 : 5;
+    const scale = 25;
 
-  private initShapes(isMobile: boolean): void {
-    // Molecular / atomic structure:
-    //   Nuclei  = wireframe polyhedra (Icosahedron, Dodecahedron, Octahedron)
-    //   Orbits  = electron-shell rings tilted at various angles
-    //   Bonds   = lines connecting nearby atoms
-    const atomDefs = [
-      { geo: () => new THREE.IcosahedronGeometry(1, 1), scaleRange: [50, 70], orbits: 2 },
-      { geo: () => new THREE.DodecahedronGeometry(1, 0), scaleRange: [35, 55], orbits: 1 },
-      { geo: () => new THREE.OctahedronGeometry(1, 0), scaleRange: [25, 45], orbits: 1 },
-    ];
+    // Well-spaced positions for constellations
+    const positions: THREE.Vector3[] = [];
+    const minDist = 280;
 
-    const atomCount = isMobile ? 3 : 5;
+    for (let ci = 0; ci < count; ci++) {
+      const def = CONSTELLATION_DEFS[ci % CONSTELLATION_DEFS.length];
 
-    // Well-spaced positions
-    const atomPositions: THREE.Vector3[] = [];
-    const minDist = 250;
-    for (let i = 0; i < atomCount; i++) {
       let pos: THREE.Vector3;
       let attempts = 0;
       do {
         pos = new THREE.Vector3(
-          (Math.random() - 0.5) * 900,
+          (Math.random() - 0.5) * 800,
           (Math.random() - 0.5) * 600,
-          (Math.random() - 0.5) * 300 - 50,
+          (Math.random() - 0.5) * 200 - 100,
         );
         attempts++;
       } while (
         attempts < 50 &&
-        atomPositions.some((p) => p.distanceTo(pos) < minDist)
+        positions.some((p) => p.distanceTo(pos) < minDist)
       );
-      atomPositions.push(pos);
-    }
+      positions.push(pos);
 
-    const nucleusIndices: number[] = [];
+      const group = new THREE.Group();
+      group.position.copy(pos);
+      group.rotation.z = Math.random() * Math.PI * 2;
 
-    for (let i = 0; i < atomCount; i++) {
-      const def = atomDefs[i % atomDefs.length];
-      const basePos = atomPositions[i];
+      // Center constellation around its own origin
+      let cx = 0;
+      let cy = 0;
+      for (const [sx, sy] of def.stars) {
+        cx += sx;
+        cy += sy;
+      }
+      cx /= def.stars.length;
+      cy /= def.stars.length;
 
-      // ── Nucleus ──
-      const solidGeo = def.geo();
-      const wireGeo = new THREE.EdgesGeometry(solidGeo);
-      solidGeo.dispose();
+      const starPositions: THREE.Vector3[] = [];
+      const starPosArray = new Float32Array(def.stars.length * 3);
+      const starColorArray = new Float32Array(def.stars.length * 3);
 
-      const t = i / Math.max(atomCount - 1, 1);
-      const color = new THREE.Color().lerpColors(
-        new THREE.Color(0.2, 1.8, 2.0),
-        new THREE.Color(1.0, 0.5, 2.0),
-        t,
+      // Color per constellation: gradient from cyan to purple
+      const ct = ci / Math.max(count - 1, 1);
+      const starColor = new THREE.Color().lerpColors(
+        new THREE.Color(0.3, 2.0, 2.5),
+        new THREE.Color(1.2, 0.6, 2.0),
+        ct,
+      );
+      const lineColor = new THREE.Color().lerpColors(
+        new THREE.Color(0.1, 1.0, 1.2),
+        new THREE.Color(0.6, 0.3, 1.0),
+        ct,
       );
 
-      const material = new THREE.LineBasicMaterial({
-        color,
+      for (let si = 0; si < def.stars.length; si++) {
+        const [sx, sy] = def.stars[si];
+        const x = (sx - cx) * scale;
+        const y = (sy - cy) * scale;
+        const z = (Math.random() - 0.5) * 8;
+
+        starPosArray[si * 3] = x;
+        starPosArray[si * 3 + 1] = y;
+        starPosArray[si * 3 + 2] = z;
+        starPositions.push(new THREE.Vector3(x, y, z));
+
+        starColorArray[si * 3] = starColor.r;
+        starColorArray[si * 3 + 1] = starColor.g;
+        starColorArray[si * 3 + 2] = starColor.b;
+      }
+
+      // Constellation star points (brighter & larger than background)
+      const starGeo = new THREE.BufferGeometry();
+      starGeo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(starPosArray, 3),
+      );
+      starGeo.setAttribute(
+        "color",
+        new THREE.BufferAttribute(starColorArray, 3),
+      );
+
+      const starMat = new THREE.PointsMaterial({
+        size: 4,
+        sizeAttenuation: true,
+        vertexColors: true,
         transparent: true,
-        opacity: 0.2,
+        opacity: 0.9,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        map: this.circleTexture,
+      });
+
+      group.add(new THREE.Points(starGeo, starMat));
+
+      // Connection lines
+      const lineVerts: number[] = [];
+      const lineColorVerts: number[] = [];
+
+      for (const [from, to] of def.lines) {
+        const fp = starPositions[from];
+        const tp = starPositions[to];
+        lineVerts.push(fp.x, fp.y, fp.z, tp.x, tp.y, tp.z);
+        lineColorVerts.push(
+          lineColor.r, lineColor.g, lineColor.b,
+          lineColor.r, lineColor.g, lineColor.b,
+        );
+      }
+
+      const lineGeo = new THREE.BufferGeometry();
+      lineGeo.setAttribute(
+        "position",
+        new THREE.BufferAttribute(new Float32Array(lineVerts), 3),
+      );
+      lineGeo.setAttribute(
+        "color",
+        new THREE.BufferAttribute(new Float32Array(lineColorVerts), 3),
+      );
+
+      const lineMat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.15,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
       });
 
-      const mesh = new THREE.LineSegments(wireGeo, material);
-      const scale =
-        def.scaleRange[0] +
-        Math.random() * (def.scaleRange[1] - def.scaleRange[0]);
-      mesh.scale.setScalar(scale);
-      mesh.position.copy(basePos);
+      group.add(new THREE.LineSegments(lineGeo, lineMat));
 
-      this.scene.add(mesh);
+      this.scene.add(group);
 
-      const nucleusIdx = this.shapes.length;
-      nucleusIndices.push(nucleusIdx);
-
-      this.shapes.push({
-        mesh,
-        rotSpeed: new THREE.Vector3(
-          (Math.random() - 0.5) * 0.04,
-          (Math.random() - 0.5) * 0.04,
-          (Math.random() - 0.5) * 0.02,
-        ),
-        basePosition: basePos.clone(),
+      this.constellations.push({
+        group,
         phase: Math.random() * Math.PI * 2,
-        bobAmplitude: 8 + Math.random() * 12,
+        bobAmplitude: 5 + Math.random() * 10,
+        rotSpeed: (Math.random() - 0.5) * 0.008,
+        basePosition: pos.clone(),
       });
-
-      // ── Electron orbit rings ──
-      for (let oi = 0; oi < def.orbits; oi++) {
-        const orbitScale = scale * (1.3 + oi * 0.5);
-        const ringGeo = this.createRingGeometry(64);
-
-        const orbitColor = color.clone().multiplyScalar(0.7);
-        const orbitMaterial = new THREE.LineBasicMaterial({
-          color: orbitColor,
-          transparent: true,
-          opacity: 0.12,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-
-        const orbitMesh = new THREE.LineSegments(ringGeo, orbitMaterial);
-        orbitMesh.scale.setScalar(orbitScale);
-        orbitMesh.position.copy(basePos);
-
-        // Tilt each orbit to a unique axis
-        orbitMesh.rotation.x = Math.random() * Math.PI;
-        orbitMesh.rotation.y = Math.random() * Math.PI;
-
-        this.scene.add(orbitMesh);
-
-        this.shapes.push({
-          mesh: orbitMesh,
-          rotSpeed: new THREE.Vector3(
-            (Math.random() - 0.5) * 0.3 + (oi === 0 ? 0.15 : -0.1),
-            (Math.random() - 0.5) * 0.2,
-            (Math.random() - 0.5) * 0.15,
-          ),
-          basePosition: basePos.clone(),
-          phase: Math.random() * Math.PI * 2,
-          bobAmplitude: 8 + Math.random() * 12,
-          parentIdx: nucleusIdx,
-        });
-      }
-    }
-
-    // ── Chemical bonds between nearby atoms ──
-    for (let i = 0; i < nucleusIndices.length; i++) {
-      for (let j = i + 1; j < nucleusIndices.length; j++) {
-        const dist = atomPositions[i].distanceTo(atomPositions[j]);
-        if (dist > 500) continue;
-
-        const geometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(6);
-        geometry.setAttribute(
-          "position",
-          new THREE.BufferAttribute(positions, 3),
-        );
-
-        const bondT = (i + j) / (2 * Math.max(atomCount - 1, 1));
-        const bondColor = new THREE.Color().lerpColors(
-          new THREE.Color(0.15, 1.2, 1.5),
-          new THREE.Color(0.6, 0.3, 1.2),
-          bondT,
-        );
-
-        const lineMat = new THREE.LineBasicMaterial({
-          color: bondColor,
-          transparent: true,
-          opacity: 0.06,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
-
-        const line = new THREE.Line(geometry, lineMat);
-        this.scene.add(line);
-
-        this.synapses.push({
-          line,
-          fromIdx: nucleusIndices[i],
-          toIdx: nucleusIndices[j],
-          flowPhase: Math.random() * Math.PI * 2,
-          flowSpeed: 0.2 + Math.random() * 0.5,
-        });
-      }
     }
   }
 
@@ -476,60 +497,15 @@ export class ParticleField {
     ).needsUpdate = true;
     colorAttr.needsUpdate = true;
 
-    // Update molecular structure
-    for (const shape of this.shapes) {
-      shape.mesh.rotation.x += shape.rotSpeed.x * 0.016;
-      shape.mesh.rotation.y += shape.rotSpeed.y * 0.016;
-      shape.mesh.rotation.z += shape.rotSpeed.z * 0.016;
-
-      if (shape.parentIdx !== undefined) {
-        // Orbit ring: follow parent nucleus position
-        const parent = this.shapes[shape.parentIdx];
-        shape.mesh.position.copy(parent.mesh.position);
-
-        // Subtle orbit shimmer
-        const orbitPulse =
-          0.08 + 0.06 * Math.sin(this.time * 1.2 + shape.phase);
-        (shape.mesh.material as THREE.LineBasicMaterial).opacity = orbitPulse;
-      } else {
-        // Nucleus: gentle bobbing
-        shape.mesh.position.x =
-          shape.basePosition.x +
-          Math.sin(this.time * 0.4 + shape.phase) * shape.bobAmplitude * 0.5;
-        shape.mesh.position.y =
-          shape.basePosition.y +
-          Math.sin(this.time * 0.25 + shape.phase) * shape.bobAmplitude;
-
-        // Nucleus pulse
-        const pulse =
-          0.15 + 0.1 * Math.sin(this.time * 0.6 + shape.phase);
-        (shape.mesh.material as THREE.LineBasicMaterial).opacity = pulse;
-      }
-    }
-
-    // Update chemical bonds
-    for (const syn of this.synapses) {
-      const fromPos = this.shapes[syn.fromIdx].mesh.position;
-      const toPos = this.shapes[syn.toIdx].mesh.position;
-
-      const posArr = (
-        syn.line.geometry.attributes.position as THREE.BufferAttribute
-      ).array as Float32Array;
-      posArr[0] = fromPos.x;
-      posArr[1] = fromPos.y;
-      posArr[2] = fromPos.z;
-      posArr[3] = toPos.x;
-      posArr[4] = toPos.y;
-      posArr[5] = toPos.z;
-      (
-        syn.line.geometry.attributes.position as THREE.BufferAttribute
-      ).needsUpdate = true;
-
-      // Bond energy pulse
-      const flow =
-        0.04 +
-        0.06 * Math.max(0, Math.sin(this.time * syn.flowSpeed + syn.flowPhase));
-      (syn.line.material as THREE.LineBasicMaterial).opacity = flow;
+    // Update constellations — gentle drift & slow rotation
+    for (const c of this.constellations) {
+      c.group.position.x =
+        c.basePosition.x +
+        Math.sin(this.time * 0.3 + c.phase) * c.bobAmplitude;
+      c.group.position.y =
+        c.basePosition.y +
+        Math.sin(this.time * 0.2 + c.phase * 1.3) * c.bobAmplitude;
+      c.group.rotation.z += c.rotSpeed * 0.016;
     }
 
     // Camera parallax
@@ -552,14 +528,17 @@ export class ParticleField {
 
     this.particles.geometry.dispose();
     (this.particles.material as THREE.Material).dispose();
-    for (const shape of this.shapes) {
-      shape.mesh.geometry.dispose();
-      (shape.mesh.material as THREE.Material).dispose();
+
+    for (const c of this.constellations) {
+      c.group.traverse((obj) => {
+        if (obj instanceof THREE.Points || obj instanceof THREE.LineSegments) {
+          obj.geometry.dispose();
+          (obj.material as THREE.Material).dispose();
+        }
+      });
     }
-    for (const syn of this.synapses) {
-      syn.line.geometry.dispose();
-      (syn.line.material as THREE.Material).dispose();
-    }
+
+    this.circleTexture.dispose();
     this.composer.dispose();
     this.renderer.dispose();
   }
