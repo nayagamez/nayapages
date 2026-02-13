@@ -254,6 +254,7 @@ export class ParticleField {
   private scrollCurrentPitch = 0;
   private lastScrollY = 0;
   private touchActive = false;
+  private activeTouchId: number | null = null;
   private projectionTemp = new THREE.Vector3();
   private patternCooldownUntil = new Float32Array(CONSTELLATION_DEFS.length);
   private wrappedThisFrame!: Uint8Array;
@@ -1395,7 +1396,7 @@ export class ParticleField {
   private bindEvents(): void {
     window.addEventListener("mousemove", this.onMouseMove);
     window.addEventListener("touchstart", this.onTouchStart, { passive: true });
-    window.addEventListener("touchmove", this.onTouchMove, { passive: true });
+    window.addEventListener("touchmove", this.onTouchMove, { passive: false });
     window.addEventListener("touchend", this.onTouchEnd, { passive: true });
     window.addEventListener("touchcancel", this.onTouchEnd, { passive: true });
     window.addEventListener("scroll", this.onScroll, { passive: true });
@@ -1422,28 +1423,50 @@ export class ParticleField {
     const touch = e.touches[0] ?? e.changedTouches[0];
     if (!touch) return;
     this.touchActive = true;
+    this.activeTouchId = touch.identifier;
     this.setPointerTarget(touch.clientX, touch.clientY);
   };
 
   private onTouchMove = (e: TouchEvent): void => {
-    const touch = e.touches[0] ?? e.changedTouches[0];
+    let touch: Touch | null = null;
+    if (this.activeTouchId !== null) {
+      for (let i = 0; i < e.touches.length; i++) {
+        if (e.touches[i].identifier === this.activeTouchId) {
+          touch = e.touches[i];
+          break;
+        }
+      }
+    }
+    if (!touch) touch = e.touches[0] ?? e.changedTouches[0] ?? null;
     if (!touch) return;
     this.touchActive = true;
+    this.activeTouchId = touch.identifier;
+    // During drag interaction, keep touch movement as pointer input
+    // instead of letting page scroll consume the gesture.
+    e.preventDefault();
     this.setPointerTarget(touch.clientX, touch.clientY);
   };
 
   private onTouchEnd = (e: TouchEvent): void => {
     if (e.touches.length > 0) {
-      const touch = e.touches[0];
+      let touch: Touch | null = null;
+      if (this.activeTouchId !== null) {
+        for (let i = 0; i < e.touches.length; i++) {
+          if (e.touches[i].identifier === this.activeTouchId) {
+            touch = e.touches[i];
+            break;
+          }
+        }
+      }
+      if (!touch) touch = e.touches[0];
       this.touchActive = true;
+      this.activeTouchId = touch.identifier;
       this.setPointerTarget(touch.clientX, touch.clientY);
       return;
     }
 
     this.touchActive = false;
-    const centerX = window.innerWidth * 0.5;
-    const centerY = window.innerHeight * 0.5;
-    this.setPointerTarget(centerX, centerY);
+    this.activeTouchId = null;
   };
 
   private onScroll = (): void => {
