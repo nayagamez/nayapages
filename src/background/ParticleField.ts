@@ -189,6 +189,8 @@ const PATTERN_COMPLEXITY_BIAS_POWER = 0.5;
 const MATCH_TOP_PATTERN_CHOICES = 4;
 const MATCH_SELECTION_TEMPERATURE = 0.08;
 const SCROLL_LERP = 0.12;
+const TOUCH_SCROLL_DRAG_COUPLING = 0.35;
+const TOUCH_SCROLL_DRAG_MAX_RATIO = 0.35;
 const SCROLL_DESKTOP_CONFIG: ScrollParallaxConfig = {
   impulse: 0.12,
   damping: 0.9,
@@ -255,6 +257,9 @@ export class ParticleField {
   private lastScrollY = 0;
   private touchActive = false;
   private activeTouchId: number | null = null;
+  private touchLastClientX = 0;
+  private touchLastClientY = 0;
+  private touchScrollDragCarryY = 0;
   private projectionTemp = new THREE.Vector3();
   private patternCooldownUntil = new Float32Array(CONSTELLATION_DEFS.length);
   private wrappedThisFrame!: Uint8Array;
@@ -1408,10 +1413,24 @@ export class ParticleField {
   }
 
   private setPointerTarget(clientX: number, clientY: number): void {
-    this.targetMouse.x = (clientX / window.innerWidth) * 2 - 1;
-    this.targetMouse.y = -(clientY / window.innerHeight) * 2 + 1;
-    this.targetMouseScreen.x = clientX;
-    this.targetMouseScreen.y = clientY;
+    const width = Math.max(window.innerWidth, 1);
+    const height = Math.max(window.innerHeight, 1);
+    const clampedX = THREE.MathUtils.clamp(clientX, 0, width);
+    const clampedY = THREE.MathUtils.clamp(clientY, 0, height);
+    this.targetMouse.x = (clampedX / width) * 2 - 1;
+    this.targetMouse.y = -(clampedY / height) * 2 + 1;
+    this.targetMouseScreen.x = clampedX;
+    this.targetMouseScreen.y = clampedY;
+  }
+
+  private setHybridTouchPointerTarget(clientX: number, clientY: number): void {
+    const maxCarry = window.innerHeight * TOUCH_SCROLL_DRAG_MAX_RATIO;
+    this.touchScrollDragCarryY = THREE.MathUtils.clamp(
+      this.touchScrollDragCarryY,
+      -maxCarry,
+      maxCarry,
+    );
+    this.setPointerTarget(clientX, clientY + this.touchScrollDragCarryY);
   }
 
   private onMouseMove = (e: MouseEvent): void => {
@@ -1424,7 +1443,10 @@ export class ParticleField {
     if (!touch) return;
     this.touchActive = true;
     this.activeTouchId = touch.identifier;
-    this.setPointerTarget(touch.clientX, touch.clientY);
+    this.touchLastClientX = touch.clientX;
+    this.touchLastClientY = touch.clientY;
+    this.touchScrollDragCarryY = 0;
+    this.setHybridTouchPointerTarget(touch.clientX, touch.clientY);
   };
 
   private onTouchMove = (e: TouchEvent): void => {
@@ -1441,7 +1463,9 @@ export class ParticleField {
     if (!touch) return;
     this.touchActive = true;
     this.activeTouchId = touch.identifier;
-    this.setPointerTarget(touch.clientX, touch.clientY);
+    this.touchLastClientX = touch.clientX;
+    this.touchLastClientY = touch.clientY;
+    this.setHybridTouchPointerTarget(touch.clientX, touch.clientY);
   };
 
   private onTouchEnd = (e: TouchEvent): void => {
@@ -1458,12 +1482,16 @@ export class ParticleField {
       if (!touch) touch = e.touches[0];
       this.touchActive = true;
       this.activeTouchId = touch.identifier;
-      this.setPointerTarget(touch.clientX, touch.clientY);
+      this.touchLastClientX = touch.clientX;
+      this.touchLastClientY = touch.clientY;
+      this.touchScrollDragCarryY = 0;
+      this.setHybridTouchPointerTarget(touch.clientX, touch.clientY);
       return;
     }
 
     this.touchActive = false;
     this.activeTouchId = null;
+    this.touchScrollDragCarryY = 0;
   };
 
   private onScroll = (): void => {
@@ -1497,6 +1525,14 @@ export class ParticleField {
       -this.scrollConfig.pitchClamp,
       this.scrollConfig.pitchClamp,
     );
+
+    if (this.touchActive && this.activeTouchId !== null) {
+      this.touchScrollDragCarryY -= delta * TOUCH_SCROLL_DRAG_COUPLING;
+      this.setHybridTouchPointerTarget(
+        this.touchLastClientX,
+        this.touchLastClientY,
+      );
+    }
   };
 
   private onResize = (): void => {
