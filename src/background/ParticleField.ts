@@ -109,6 +109,11 @@ interface ScrollParallaxConfig {
   deltaClamp: number;
 }
 
+interface PatternMatchResult {
+  particleIndices: number[];
+  score: number;
+}
+
 /* ---------- Tuning constants ---------- */
 
 const CLUSTER_SEARCH_INTERVAL = 3.0;
@@ -124,6 +129,10 @@ const STAR_BOOST_MAX = 2.5;
 const GRID_CELL_SIZE = 80;
 const GRID_SIZE = 15;
 const WRAP_DETECT_DIST = 400;
+const MATCH_ANGLE_STEPS = 12;
+const MATCH_POOL_MULTIPLIER = 3;
+const MATCH_SCALE_VARIANTS = [0.7, 0.85, 1.0] as const;
+const MATCH_QUALITY_THRESHOLD = 1.15;
 const SCROLL_LERP = 0.12;
 const SCROLL_DESKTOP_CONFIG: ScrollParallaxConfig = {
   impulse: 0.12,
@@ -347,6 +356,186 @@ export class ParticleField {
 
   /* ========== Dynamic Constellation System ========== */
 
+  private shuffleNumbersInPlace(values: number[]): void {
+    for (let i = values.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = values[i];
+      values[i] = values[j];
+      values[j] = temp;
+    }
+  }
+
+  private tryMatchPatternToBlock(
+    particleIndices: number[],
+    def: ConstellationDef,
+    blockCenterX: number,
+    blockCenterY: number,
+  ): PatternMatchResult | null {
+    const starCount = def.stars.length;
+    if (particleIndices.length < starCount) return null;
+
+    const sortedPool = particleIndices.slice();
+    sortedPool.sort((a, b) => {
+      const ax = this.particlePositions[a * 3] - blockCenterX;
+      const ay = this.particlePositions[a * 3 + 1] - blockCenterY;
+      const bx = this.particlePositions[b * 3] - blockCenterX;
+      const by = this.particlePositions[b * 3 + 1] - blockCenterY;
+      return ax * ax + ay * ay - (bx * bx + by * by);
+    });
+
+    const poolSize = Math.min(
+      sortedPool.length,
+      Math.max(starCount * MATCH_POOL_MULTIPLIER, starCount + 4),
+    );
+    const pool = sortedPool.slice(0, poolSize);
+    if (pool.length < starCount) return null;
+
+    let clusterCenterX = 0;
+    let clusterCenterY = 0;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const idx of pool) {
+      const x = this.particlePositions[idx * 3];
+      const y = this.particlePositions[idx * 3 + 1];
+      clusterCenterX += x;
+      clusterCenterY += y;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+
+    clusterCenterX /= pool.length;
+    clusterCenterY /= pool.length;
+
+    let patternCenterX = 0;
+    let patternCenterY = 0;
+    for (const [sx, sy] of def.stars) {
+      patternCenterX += sx;
+      patternCenterY += sy;
+    }
+    patternCenterX /= starCount;
+    patternCenterY /= starCount;
+
+    const centeredStars = new Array<{ x: number; y: number }>(starCount);
+    let patternMinX = Infinity;
+    let patternMinY = Infinity;
+    let patternMaxX = -Infinity;
+    let patternMaxY = -Infinity;
+
+    for (let i = 0; i < starCount; i++) {
+      const [sx, sy] = def.stars[i];
+      const px = sx - patternCenterX;
+      const py = sy - patternCenterY;
+      centeredStars[i] = { x: px, y: py };
+      if (px < patternMinX) patternMinX = px;
+      if (px > patternMaxX) patternMaxX = px;
+      if (py < patternMinY) patternMinY = py;
+      if (py > patternMaxY) patternMaxY = py;
+    }
+
+    const patternSpan = Math.max(
+      patternMaxX - patternMinX,
+      patternMaxY - patternMinY,
+      1,
+    );
+    const clusterSpan = Math.max(maxX - minX, maxY - minY, GRID_CELL_SIZE * 0.8);
+    const baseScale = clusterSpan / patternSpan;
+
+    const starOrder = Array.from({ length: starCount }, (_, i) => i);
+    starOrder.sort((a, b) => {
+      const ar =
+        centeredStars[a].x * centeredStars[a].x +
+        centeredStars[a].y * centeredStars[a].y;
+      const br =
+        centeredStars[b].x * centeredStars[b].x +
+        centeredStars[b].y * centeredStars[b].y;
+      return br - ar;
+    });
+
+    let best: PatternMatchResult | null = null;
+
+    for (const scaleMul of MATCH_SCALE_VARIANTS) {
+      const scale = baseScale * scaleMul;
+
+      for (let ai = 0; ai < MATCH_ANGLE_STEPS; ai++) {
+        const theta = (Math.PI * 2 * ai) / MATCH_ANGLE_STEPS;
+        const cosT = Math.cos(theta);
+        const sinT = Math.sin(theta);
+
+        const assigned = new Array<number>(starCount);
+        const used = new Uint8Array(pool.length);
+
+        let sumDistSq = 0;
+        let maxDist = 0;
+        let sumZ = 0;
+        let sumZSq = 0;
+        let failed = false;
+
+        for (const starIdx of starOrder) {
+          const p = centeredStars[starIdx];
+          const tx = clusterCenterX + (p.x * cosT - p.y * sinT) * scale;
+          const ty = clusterCenterY + (p.x * sinT + p.y * cosT) * scale;
+
+          let bestPoolIdx = -1;
+          let bestDistSq = Infinity;
+
+          for (let pi = 0; pi < pool.length; pi++) {
+            if (used[pi] === 1) continue;
+
+            const idx = pool[pi];
+            const dx = this.particlePositions[idx * 3] - tx;
+            const dy = this.particlePositions[idx * 3 + 1] - ty;
+            const distSq = dx * dx + dy * dy;
+
+            if (distSq < bestDistSq) {
+              bestDistSq = distSq;
+              bestPoolIdx = pi;
+            }
+          }
+
+          if (bestPoolIdx < 0) {
+            failed = true;
+            break;
+          }
+
+          used[bestPoolIdx] = 1;
+          const chosenIdx = pool[bestPoolIdx];
+          assigned[starIdx] = chosenIdx;
+
+          sumDistSq += bestDistSq;
+          const dist = Math.sqrt(bestDistSq);
+          if (dist > maxDist) maxDist = dist;
+
+          const z = this.particlePositions[chosenIdx * 3 + 2];
+          sumZ += z;
+          sumZSq += z * z;
+        }
+
+        if (failed) continue;
+        if (maxDist > scale * 2.4) continue;
+
+        const rmsError = Math.sqrt(sumDistSq / starCount);
+        const normalizedError = rmsError / Math.max(scale, 1);
+        const meanZ = sumZ / starCount;
+        const zVariance = Math.max(sumZSq / starCount - meanZ * meanZ, 0);
+        const zStdDev = Math.sqrt(zVariance);
+        const score = normalizedError + (zStdDev / 260) * 0.35;
+
+        if (score > MATCH_QUALITY_THRESHOLD) continue;
+
+        if (!best || score < best.score) {
+          best = { particleIndices: assigned, score };
+        }
+      }
+    }
+
+    return best;
+  }
+
   private findCluster(): void {
     const activeCount = this.liveConstellations.filter(
       (lc) => lc.state !== ConstellationState.Dissolved,
@@ -408,42 +597,73 @@ export class ParticleField {
 
     if (candidates.length === 0) return;
 
-    // Pick a random candidate block
-    const block = candidates[Math.floor(Math.random() * candidates.length)];
-
-    // Pick a pattern, preferring unused ones
-    let patternIndex = -1;
+    // Build pattern search order (unused patterns first)
     const unusedPatterns: number[] = [];
+    const alreadyUsedPatterns: number[] = [];
     for (let i = 0; i < CONSTELLATION_DEFS.length; i++) {
-      if (!usedPatterns.has(i)) unusedPatterns.push(i);
-    }
-    if (unusedPatterns.length > 0) {
-      patternIndex =
-        unusedPatterns[Math.floor(Math.random() * unusedPatterns.length)];
-    } else {
-      patternIndex = Math.floor(Math.random() * CONSTELLATION_DEFS.length);
+      if (usedPatterns.has(i)) alreadyUsedPatterns.push(i);
+      else unusedPatterns.push(i);
     }
 
+    this.shuffleNumbersInPlace(unusedPatterns);
+    this.shuffleNumbersInPlace(alreadyUsedPatterns);
+    const patternOrder = [...unusedPatterns, ...alreadyUsedPatterns];
+
+    // Shuffle blocks and search the best shape match.
+    const candidateOrder = Array.from({ length: candidates.length }, (_, i) => i);
+    this.shuffleNumbersInPlace(candidateOrder);
+
+    const blockTryCount = Math.min(candidateOrder.length, 10);
+    let bestMatch:
+      | {
+          patternIndex: number;
+          particleIndices: number[];
+          score: number;
+        }
+      | null = null;
+
+    for (let bi = 0; bi < blockTryCount; bi++) {
+      const block = candidates[candidateOrder[bi]];
+      const blockCenterX = (block.gx + 1) * GRID_CELL_SIZE - halfGrid;
+      const blockCenterY = (block.gy + 1) * GRID_CELL_SIZE - halfGrid;
+
+      for (const candidatePatternIndex of patternOrder) {
+        const def = CONSTELLATION_DEFS[candidatePatternIndex];
+        if (block.particles.length < def.stars.length) continue;
+
+        const match = this.tryMatchPatternToBlock(
+          block.particles,
+          def,
+          blockCenterX,
+          blockCenterY,
+        );
+        if (!match) continue;
+
+        // Keep variety by slightly penalizing currently reused patterns.
+        const patternReusePenalty = usedPatterns.has(candidatePatternIndex)
+          ? 0.02
+          : 0;
+        const totalScore = match.score + patternReusePenalty;
+
+        if (!bestMatch || totalScore < bestMatch.score) {
+          bestMatch = {
+            patternIndex: candidatePatternIndex,
+            particleIndices: match.particleIndices,
+            score: totalScore,
+          };
+        }
+      }
+
+      if (bestMatch && bestMatch.score < 0.35) break;
+    }
+
+    if (!bestMatch) return;
+
+    const patternIndex = bestMatch.patternIndex;
     const def = CONSTELLATION_DEFS[patternIndex];
     const needed = def.stars.length;
-    if (block.particles.length < needed) return;
-
-    // Find seed particle (closest to block center)
-    const blockCenterX =
-      (block.gx + 1) * GRID_CELL_SIZE - halfGrid;
-    const blockCenterY =
-      (block.gy + 1) * GRID_CELL_SIZE - halfGrid;
-
-    block.particles.sort((a, b) => {
-      const ax = this.particlePositions[a * 3] - blockCenterX;
-      const ay = this.particlePositions[a * 3 + 1] - blockCenterY;
-      const bx = this.particlePositions[b * 3] - blockCenterX;
-      const by = this.particlePositions[b * 3 + 1] - blockCenterY;
-      return ax * ax + ay * ay - (bx * bx + by * by);
-    });
-
-    // Pick the closest N particles
-    const chosen = block.particles.slice(0, needed);
+    const chosen = bestMatch.particleIndices;
+    if (chosen.length !== needed) return;
 
     // Mark particles as used
     for (const idx of chosen) this.usedParticleSet.add(idx);
@@ -527,15 +747,30 @@ export class ParticleField {
       }
 
       const def = CONSTELLATION_DEFS[lc.patternIndex];
+      const state = lc.state;
+      let dissolvedThisFrame = false;
 
       // --- State machine ---
 
-      if (lc.state === ConstellationState.Forming) {
+      if (state === ConstellationState.Forming) {
         this.updateForming(lc, def);
-      } else if (lc.state === ConstellationState.Active) {
+      } else if (state === ConstellationState.Active) {
         this.updateActive(lc);
-      } else if (lc.state === ConstellationState.Fading) {
-        this.updateFading(lc);
+      } else if (state === ConstellationState.Fading) {
+        dissolvedThisFrame = this.updateFading(lc);
+      }
+
+      if (
+        lc.state === ConstellationState.Forming &&
+        this.detectWrap(lc)
+      ) {
+        lc.state = ConstellationState.Fading;
+        lc.fadeStartTime = this.time;
+      }
+
+      if (dissolvedThisFrame) {
+        this.liveConstellations.splice(ci, 1);
+        continue;
       }
 
       // Apply star brightness boost
@@ -658,7 +893,7 @@ export class ParticleField {
     lc.opacity = 1.0;
   }
 
-  private updateFading(lc: LiveConstellation): void {
+  private updateFading(lc: LiveConstellation): boolean {
     this.computeSpread(lc);
 
     // Spread-based opacity
@@ -679,7 +914,9 @@ export class ParticleField {
 
     if (lc.opacity <= 0) {
       this.dissolveConstellation(lc);
+      return true;
     }
+    return false;
   }
 
   private computeSpread(lc: LiveConstellation): void {
