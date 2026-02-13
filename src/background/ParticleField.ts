@@ -253,6 +253,7 @@ export class ParticleField {
   private scrollTargetPitch = 0;
   private scrollCurrentPitch = 0;
   private lastScrollY = 0;
+  private touchActive = false;
   private projectionTemp = new THREE.Vector3();
   private patternCooldownUntil = new Float32Array(CONSTELLATION_DEFS.length);
   private wrappedThisFrame!: Uint8Array;
@@ -1393,6 +1394,10 @@ export class ParticleField {
 
   private bindEvents(): void {
     window.addEventListener("mousemove", this.onMouseMove);
+    window.addEventListener("touchstart", this.onTouchStart, { passive: true });
+    window.addEventListener("touchmove", this.onTouchMove, { passive: true });
+    window.addEventListener("touchend", this.onTouchEnd, { passive: true });
+    window.addEventListener("touchcancel", this.onTouchEnd, { passive: true });
     window.addEventListener("scroll", this.onScroll, { passive: true });
     window.addEventListener("resize", this.onResize);
 
@@ -1401,11 +1406,44 @@ export class ParticleField {
     canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
 
+  private setPointerTarget(clientX: number, clientY: number): void {
+    this.targetMouse.x = (clientX / window.innerWidth) * 2 - 1;
+    this.targetMouse.y = -(clientY / window.innerHeight) * 2 + 1;
+    this.targetMouseScreen.x = clientX;
+    this.targetMouseScreen.y = clientY;
+  }
+
   private onMouseMove = (e: MouseEvent): void => {
-    this.targetMouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-    this.targetMouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-    this.targetMouseScreen.x = e.clientX;
-    this.targetMouseScreen.y = e.clientY;
+    if (this.touchActive) return;
+    this.setPointerTarget(e.clientX, e.clientY);
+  };
+
+  private onTouchStart = (e: TouchEvent): void => {
+    const touch = e.touches[0] ?? e.changedTouches[0];
+    if (!touch) return;
+    this.touchActive = true;
+    this.setPointerTarget(touch.clientX, touch.clientY);
+  };
+
+  private onTouchMove = (e: TouchEvent): void => {
+    const touch = e.touches[0] ?? e.changedTouches[0];
+    if (!touch) return;
+    this.touchActive = true;
+    this.setPointerTarget(touch.clientX, touch.clientY);
+  };
+
+  private onTouchEnd = (e: TouchEvent): void => {
+    if (e.touches.length > 0) {
+      const touch = e.touches[0];
+      this.touchActive = true;
+      this.setPointerTarget(touch.clientX, touch.clientY);
+      return;
+    }
+
+    this.touchActive = false;
+    const centerX = window.innerWidth * 0.5;
+    const centerY = window.innerHeight * 0.5;
+    this.setPointerTarget(centerX, centerY);
   };
 
   private onScroll = (): void => {
@@ -1563,6 +1601,10 @@ export class ParticleField {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     window.removeEventListener("mousemove", this.onMouseMove);
+    window.removeEventListener("touchstart", this.onTouchStart);
+    window.removeEventListener("touchmove", this.onTouchMove);
+    window.removeEventListener("touchend", this.onTouchEnd);
+    window.removeEventListener("touchcancel", this.onTouchEnd);
     window.removeEventListener("scroll", this.onScroll);
     window.removeEventListener("resize", this.onResize);
 
