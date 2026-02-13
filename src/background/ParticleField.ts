@@ -374,13 +374,21 @@ export class ParticleField {
     const starCount = def.stars.length;
     if (particleIndices.length < starCount) return null;
 
+    let blockCenterZ = 0;
+    for (const idx of particleIndices) {
+      blockCenterZ += this.particlePositions[idx * 3 + 2];
+    }
+    blockCenterZ /= particleIndices.length;
+
     const sortedPool = particleIndices.slice();
     sortedPool.sort((a, b) => {
       const ax = this.particlePositions[a * 3] - blockCenterX;
       const ay = this.particlePositions[a * 3 + 1] - blockCenterY;
+      const az = this.particlePositions[a * 3 + 2] - blockCenterZ;
       const bx = this.particlePositions[b * 3] - blockCenterX;
       const by = this.particlePositions[b * 3 + 1] - blockCenterY;
-      return ax * ax + ay * ay - (bx * bx + by * by);
+      const bz = this.particlePositions[b * 3 + 2] - blockCenterZ;
+      return ax * ax + ay * ay + az * az - (bx * bx + by * by + bz * bz);
     });
 
     const poolSize = Math.min(
@@ -392,6 +400,7 @@ export class ParticleField {
 
     let clusterCenterX = 0;
     let clusterCenterY = 0;
+    let clusterCenterZ = 0;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -400,8 +409,10 @@ export class ParticleField {
     for (const idx of pool) {
       const x = this.particlePositions[idx * 3];
       const y = this.particlePositions[idx * 3 + 1];
+      const z = this.particlePositions[idx * 3 + 2];
       clusterCenterX += x;
       clusterCenterY += y;
+      clusterCenterZ += z;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -410,6 +421,7 @@ export class ParticleField {
 
     clusterCenterX /= pool.length;
     clusterCenterY /= pool.length;
+    clusterCenterZ /= pool.length;
 
     let patternCenterX = 0;
     let patternCenterY = 0;
@@ -471,14 +483,13 @@ export class ParticleField {
 
         let sumDistSq = 0;
         let maxDist = 0;
-        let sumZ = 0;
-        let sumZSq = 0;
         let failed = false;
 
         for (const starIdx of starOrder) {
           const p = centeredStars[starIdx];
           const tx = clusterCenterX + (p.x * cosT - p.y * sinT) * scale;
           const ty = clusterCenterY + (p.x * sinT + p.y * cosT) * scale;
+          const tz = clusterCenterZ;
 
           let bestPoolIdx = -1;
           let bestDistSq = Infinity;
@@ -489,7 +500,8 @@ export class ParticleField {
             const idx = pool[pi];
             const dx = this.particlePositions[idx * 3] - tx;
             const dy = this.particlePositions[idx * 3 + 1] - ty;
-            const distSq = dx * dx + dy * dy;
+            const dz = this.particlePositions[idx * 3 + 2] - tz;
+            const distSq = dx * dx + dy * dy + dz * dz;
 
             if (distSq < bestDistSq) {
               bestDistSq = distSq;
@@ -509,10 +521,6 @@ export class ParticleField {
           sumDistSq += bestDistSq;
           const dist = Math.sqrt(bestDistSq);
           if (dist > maxDist) maxDist = dist;
-
-          const z = this.particlePositions[chosenIdx * 3 + 2];
-          sumZ += z;
-          sumZSq += z * z;
         }
 
         if (failed) continue;
@@ -520,10 +528,7 @@ export class ParticleField {
 
         const rmsError = Math.sqrt(sumDistSq / starCount);
         const normalizedError = rmsError / Math.max(scale, 1);
-        const meanZ = sumZ / starCount;
-        const zVariance = Math.max(sumZSq / starCount - meanZ * meanZ, 0);
-        const zStdDev = Math.sqrt(zVariance);
-        const score = normalizedError + (zStdDev / 260) * 0.35;
+        const score = normalizedError;
 
         if (score > MATCH_QUALITY_THRESHOLD) continue;
 
