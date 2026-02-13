@@ -129,6 +129,10 @@ const STAR_BOOST_MAX = 2.5;
 const GRID_CELL_SIZE = 80;
 const GRID_SIZE = 15;
 const WRAP_DETECT_DIST = 400;
+const SPAWN_SCREEN_PADDING = 0.18;
+const DESPAWN_SCREEN_PADDING = 0.35;
+const SCREEN_Z_PADDING = 0.2;
+const MIN_ONSCREEN_LIFETIME = 1.5;
 const MATCH_ANGLE_STEPS = 12;
 const MATCH_POOL_MULTIPLIER = 3;
 const MATCH_SCALE_VARIANTS = [0.7, 0.85, 1.0] as const;
@@ -198,6 +202,7 @@ export class ParticleField {
   private scrollTargetPitch = 0;
   private scrollCurrentPitch = 0;
   private lastScrollY = 0;
+  private projectionTemp = new THREE.Vector3();
 
   constructor(options: ParticleFieldOptions) {
     const isMobile = window.innerWidth < 768;
@@ -363,6 +368,51 @@ export class ParticleField {
       values[i] = values[j];
       values[j] = temp;
     }
+  }
+
+  private isParticleWithinScreenPadding(
+    particleIndex: number,
+    padding: number,
+  ): boolean {
+    const i3 = particleIndex * 3;
+    this.projectionTemp
+      .set(
+        this.particlePositions[i3],
+        this.particlePositions[i3 + 1],
+        this.particlePositions[i3 + 2],
+      )
+      .project(this.camera);
+
+    if (
+      !Number.isFinite(this.projectionTemp.x) ||
+      !Number.isFinite(this.projectionTemp.y) ||
+      !Number.isFinite(this.projectionTemp.z)
+    ) {
+      return false;
+    }
+
+    const min = -1 - padding;
+    const max = 1 + padding;
+    return (
+      this.projectionTemp.x >= min &&
+      this.projectionTemp.x <= max &&
+      this.projectionTemp.y >= min &&
+      this.projectionTemp.y <= max &&
+      this.projectionTemp.z >= -1 - SCREEN_Z_PADDING &&
+      this.projectionTemp.z <= 1 + SCREEN_Z_PADDING
+    );
+  }
+
+  private isConstellationWithinScreenPadding(
+    lc: LiveConstellation,
+    padding: number,
+  ): boolean {
+    for (const idx of lc.particleIndices) {
+      if (this.isParticleWithinScreenPadding(idx, padding)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private tryMatchPatternToBlock(
@@ -547,21 +597,57 @@ export class ParticleField {
     ).length;
     if (activeCount >= this.maxConstellations) return;
 
-    // Build 2D spatial hash grid (XY plane only)
+    // Build 2D spatial hash grid in projected screen space (NDC).
     const grid = new Map<number, number[]>();
-    const halfGrid = (GRID_SIZE * GRID_CELL_SIZE) / 2;
+    const screenMin = -1 - SPAWN_SCREEN_PADDING;
+    const screenMax = 1 + SPAWN_SCREEN_PADDING;
+    const screenRange = screenMax - screenMin;
+    const screenCellSize = screenRange / GRID_SIZE;
+
+    this.camera.updateMatrixWorld();
 
     for (let i = 0; i < this.particleCount; i++) {
       if (this.usedParticleSet.has(i)) continue;
-      const x = this.particlePositions[i * 3];
-      const y = this.particlePositions[i * 3 + 1];
-      // Only consider particles within grid bounds
+
+      const i3 = i * 3;
+      this.projectionTemp
+        .set(
+          this.particlePositions[i3],
+          this.particlePositions[i3 + 1],
+          this.particlePositions[i3 + 2],
+        )
+        .project(this.camera);
+
       if (
-        x < -halfGrid || x > halfGrid ||
-        y < -halfGrid || y > halfGrid
-      ) continue;
-      const gx = Math.floor((x + halfGrid) / GRID_CELL_SIZE);
-      const gy = Math.floor((y + halfGrid) / GRID_CELL_SIZE);
+        !Number.isFinite(this.projectionTemp.x) ||
+        !Number.isFinite(this.projectionTemp.y) ||
+        !Number.isFinite(this.projectionTemp.z)
+      ) {
+        continue;
+      }
+
+      if (
+        this.projectionTemp.z < -1 - SCREEN_Z_PADDING ||
+        this.projectionTemp.z > 1 + SCREEN_Z_PADDING
+      ) {
+        continue;
+      }
+
+      if (
+        this.projectionTemp.x < screenMin || this.projectionTemp.x > screenMax ||
+        this.projectionTemp.y < screenMin || this.projectionTemp.y > screenMax
+      ) {
+        continue;
+      }
+
+      const gx = Math.min(
+        Math.floor((this.projectionTemp.x - screenMin) / screenCellSize),
+        GRID_SIZE - 1,
+      );
+      const gy = Math.min(
+        Math.floor((this.projectionTemp.y - screenMin) / screenCellSize),
+        GRID_SIZE - 1,
+      );
       const key = gy * GRID_SIZE + gx;
       let cell = grid.get(key);
       if (!cell) {
@@ -579,7 +665,11 @@ export class ParticleField {
     );
 
     // Try to find a suitable 2x2 block
-    const candidates: { gx: number; gy: number; particles: number[] }[] = [];
+    const candidates: {
+      particles: number[];
+      centerX: number;
+      centerY: number;
+    }[] = [];
 
     for (let gy = 0; gy < GRID_SIZE - 1; gy++) {
       for (let gx = 0; gx < GRID_SIZE - 1; gx++) {
@@ -595,7 +685,15 @@ export class ParticleField {
         }
         // Need at least 5 particles for smallest constellation
         if (collected.length >= 5) {
-          candidates.push({ gx, gy, particles: collected });
+          let centerX = 0;
+          let centerY = 0;
+          for (const idx of collected) {
+            centerX += this.particlePositions[idx * 3];
+            centerY += this.particlePositions[idx * 3 + 1];
+          }
+          centerX /= collected.length;
+          centerY /= collected.length;
+          candidates.push({ particles: collected, centerX, centerY });
         }
       }
     }
@@ -629,8 +727,8 @@ export class ParticleField {
 
     for (let bi = 0; bi < blockTryCount; bi++) {
       const block = candidates[candidateOrder[bi]];
-      const blockCenterX = (block.gx + 1) * GRID_CELL_SIZE - halfGrid;
-      const blockCenterY = (block.gy + 1) * GRID_CELL_SIZE - halfGrid;
+      const blockCenterX = block.centerX;
+      const blockCenterY = block.centerY;
 
       for (const candidatePatternIndex of patternOrder) {
         const def = CONSTELLATION_DEFS[candidatePatternIndex];
@@ -742,6 +840,7 @@ export class ParticleField {
   private updateConstellations(dt: number): void {
     // Reset particle boost
     this.particleBoost.fill(1.0);
+    this.camera.updateMatrixWorld();
 
     for (let ci = this.liveConstellations.length - 1; ci >= 0; ci--) {
       const lc = this.liveConstellations[ci];
@@ -771,6 +870,17 @@ export class ParticleField {
       ) {
         lc.state = ConstellationState.Fading;
         lc.fadeStartTime = this.time;
+      }
+
+      if (lc.state !== ConstellationState.Fading) {
+        const lifetime = this.time - lc.formStartTime;
+        if (
+          lifetime >= MIN_ONSCREEN_LIFETIME &&
+          !this.isConstellationWithinScreenPadding(lc, DESPAWN_SCREEN_PADDING)
+        ) {
+          lc.state = ConstellationState.Fading;
+          lc.fadeStartTime = this.time;
+        }
       }
 
       if (dissolvedThisFrame) {
