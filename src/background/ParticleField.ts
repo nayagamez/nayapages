@@ -157,6 +157,9 @@ const SPREAD_FADE_START = 1.8;
 const SPREAD_DISSOLVE = 2.5;
 const REPULSION_FORCE = 0.03;
 const STAR_BOOST_MAX = 2.5;
+const PARTICLE_BOUND = 600;
+const PARTICLE_WRAP_SPAN = PARTICLE_BOUND * 2;
+const MAX_RENDER_SEGMENT_LENGTH = 320;
 const GRID_CELL_SIZE = 80;
 const GRID_SIZE = 15;
 const WRAP_DETECT_DIST = 400;
@@ -243,6 +246,7 @@ export class ParticleField {
   private lastScrollY = 0;
   private projectionTemp = new THREE.Vector3();
   private patternCooldownUntil = new Float32Array(CONSTELLATION_DEFS.length);
+  private wrappedThisFrame!: Uint8Array;
 
   constructor(options: ParticleFieldOptions) {
     const isMobile = window.innerWidth < 768;
@@ -320,6 +324,7 @@ export class ParticleField {
     this.colors = new Float32Array(count * 3);
     this.particleBoost = new Float32Array(count);
     this.particleBoost.fill(1.0);
+    this.wrappedThisFrame = new Uint8Array(count);
 
     const spread = 1200;
 
@@ -996,9 +1001,6 @@ export class ParticleField {
         this.particleBoost[idx] = Math.max(this.particleBoost[idx], boostVal);
       }
 
-      // Update line positions from current particle positions
-      this.updateLinePositions(lc, def);
-
       // Update material opacity with flash effect
       let maxFlash = 1.0;
       for (let li = 0; li < lc.lineFlashTimers.length; li++) {
@@ -1188,6 +1190,8 @@ export class ParticleField {
     const posAttr = lc.lineGeometry.attributes
       .position as THREE.BufferAttribute;
     const arr = posAttr.array as Float32Array;
+    const maxLenSq = MAX_RENDER_SEGMENT_LENGTH * MAX_RENDER_SEGMENT_LENGTH;
+    let hasOversizedSegment = false;
 
     for (let li = 0; li < def.lines.length; li++) {
       const [fromStar, toStar] = def.lines[li];
@@ -1202,20 +1206,79 @@ export class ParticleField {
       const ty = this.particlePositions[toIdx * 3 + 1];
       const tz = this.particlePositions[toIdx * 3 + 2];
 
+      // Render each segment via shortest wrapped path on the XY torus.
+      let wrappedTx = tx;
+      let wrappedTy = ty;
+      const dx = tx - fx;
+      const dy = ty - fy;
+      if (dx > PARTICLE_BOUND) wrappedTx -= PARTICLE_WRAP_SPAN;
+      else if (dx < -PARTICLE_BOUND) wrappedTx += PARTICLE_WRAP_SPAN;
+      if (dy > PARTICLE_BOUND) wrappedTy -= PARTICLE_WRAP_SPAN;
+      else if (dy < -PARTICLE_BOUND) wrappedTy += PARTICLE_WRAP_SPAN;
+
       const progress = lc.lineProgress[li];
+      const segDx = wrappedTx - fx;
+      const segDy = wrappedTy - fy;
+      const segDz = tz - fz;
 
       const v = li * 6; // 2 vertices * 3 components
       arr[v] = fx;
       arr[v + 1] = fy;
       arr[v + 2] = fz;
 
+      if (segDx * segDx + segDy * segDy + segDz * segDz > maxLenSq) {
+        // Hard-cut outlier segments to prevent screen-crossing artifacts.
+        arr[v + 3] = fx;
+        arr[v + 4] = fy;
+        arr[v + 5] = fz;
+        hasOversizedSegment = true;
+        continue;
+      }
+
       // Second vertex lerps from "from" to "to" based on progress
-      arr[v + 3] = fx + (tx - fx) * progress;
-      arr[v + 4] = fy + (ty - fy) * progress;
-      arr[v + 5] = fz + (tz - fz) * progress;
+      arr[v + 3] = fx + segDx * progress;
+      arr[v + 4] = fy + segDy * progress;
+      arr[v + 5] = fz + segDz * progress;
     }
 
     posAttr.needsUpdate = true;
+
+    if (
+      hasOversizedSegment &&
+      lc.state !== ConstellationState.Fading &&
+      lc.state !== ConstellationState.Dissolved
+    ) {
+      lc.state = ConstellationState.Fading;
+      lc.fadeStartTime = this.time;
+    }
+  }
+
+  private updateConstellationLinesAfterParticleMove(): void {
+    for (let ci = this.liveConstellations.length - 1; ci >= 0; ci--) {
+      const lc = this.liveConstellations[ci];
+      if (lc.state === ConstellationState.Dissolved) continue;
+
+      let hasWrappedParticle = false;
+      for (const idx of lc.particleIndices) {
+        if (this.wrappedThisFrame[idx] === 1) {
+          hasWrappedParticle = true;
+          break;
+        }
+      }
+
+      if (
+        hasWrappedParticle &&
+        lc.state !== ConstellationState.Fading
+      ) {
+        // Wrapped particles frequently create one-frame bridge artifacts.
+        // Remove immediately instead of waiting for a fade.
+        this.dissolveConstellation(lc);
+        continue;
+      }
+
+      const def = CONSTELLATION_DEFS[lc.patternIndex];
+      this.updateLinePositions(lc, def);
+    }
   }
 
   /* ========== End Dynamic Constellation System ========== */
@@ -1368,7 +1431,8 @@ export class ParticleField {
     this.updateConstellations(dt);
 
     // Update particles
-    const bound = 600;
+    const bound = PARTICLE_BOUND;
+    this.wrappedThisFrame.fill(0);
     const colorAttr = this.particles.geometry.attributes
       .color as THREE.BufferAttribute;
 
@@ -1378,14 +1442,20 @@ export class ParticleField {
       this.particlePositions[i3 + 1] += this.particleVelocities[i3 + 1];
       this.particlePositions[i3 + 2] += this.particleVelocities[i3 + 2];
 
-      if (this.particlePositions[i3] > bound)
+      if (this.particlePositions[i3] > bound) {
         this.particlePositions[i3] = -bound;
-      else if (this.particlePositions[i3] < -bound)
+        this.wrappedThisFrame[i] = 1;
+      } else if (this.particlePositions[i3] < -bound) {
         this.particlePositions[i3] = bound;
-      if (this.particlePositions[i3 + 1] > bound)
+        this.wrappedThisFrame[i] = 1;
+      }
+      if (this.particlePositions[i3 + 1] > bound) {
         this.particlePositions[i3 + 1] = -bound;
-      else if (this.particlePositions[i3 + 1] < -bound)
+        this.wrappedThisFrame[i] = 1;
+      } else if (this.particlePositions[i3 + 1] < -bound) {
         this.particlePositions[i3 + 1] = bound;
+        this.wrappedThisFrame[i] = 1;
+      }
 
       const boost = this.particleBoost[i];
       const twinkle =
@@ -1407,6 +1477,7 @@ export class ParticleField {
       this.particles.geometry.attributes.position as THREE.BufferAttribute
     ).needsUpdate = true;
     colorAttr.needsUpdate = true;
+    this.updateConstellationLinesAfterParticleMove();
 
     // Camera parallax
     this.camera.position.x = this.mouse.x * 60;
