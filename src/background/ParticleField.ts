@@ -145,9 +145,15 @@ interface PatternMatchResult {
   score: number;
 }
 
+interface PatternCandidate {
+  patternIndex: number;
+  particleIndices: number[];
+  score: number;
+}
+
 /* ---------- Tuning constants ---------- */
 
-const CLUSTER_SEARCH_INTERVAL = 3.0;
+const CLUSTER_SEARCH_INTERVAL = 1.2;
 const LINE_DRAW_DURATION = 0.5;
 const LINE_STAGGER = 0.4;
 const FLASH_DURATION = 0.3;
@@ -160,6 +166,9 @@ const STAR_BOOST_MAX = 2.5;
 const PARTICLE_BOUND = 600;
 const PARTICLE_WRAP_SPAN = PARTICLE_BOUND * 2;
 const MAX_RENDER_SEGMENT_LENGTH = 320;
+const MAX_SPAWN_SEGMENT_LENGTH = 250;
+const SPAWN_STABILIZE_DURATION = 0.8;
+const SPAWN_ANCHOR_PULL = 0.16;
 const GRID_CELL_SIZE = 80;
 const GRID_SIZE = 15;
 const WRAP_DETECT_DIST = 400;
@@ -437,6 +446,57 @@ export class ParticleField {
       if (pick <= 0) return candidates[i];
     }
     return candidates[candidates.length - 1];
+  }
+
+  private wrapDelta(delta: number): number {
+    if (delta > PARTICLE_BOUND) return delta - PARTICLE_WRAP_SPAN;
+    if (delta < -PARTICLE_BOUND) return delta + PARTICLE_WRAP_SPAN;
+    return delta;
+  }
+
+  private isSpawnGeometryAcceptable(
+    particleIndices: number[],
+    def: ConstellationDef,
+  ): boolean {
+    const maxLenSq = MAX_SPAWN_SEGMENT_LENGTH * MAX_SPAWN_SEGMENT_LENGTH;
+
+    for (let li = 0; li < def.lines.length; li++) {
+      const [fromStar, toStar] = def.lines[li];
+      const fromIdx = particleIndices[fromStar];
+      const toIdx = particleIndices[toStar];
+
+      const fx = this.particlePositions[fromIdx * 3];
+      const fy = this.particlePositions[fromIdx * 3 + 1];
+      const fz = this.particlePositions[fromIdx * 3 + 2];
+
+      const tx = this.particlePositions[toIdx * 3];
+      const ty = this.particlePositions[toIdx * 3 + 1];
+      const tz = this.particlePositions[toIdx * 3 + 2];
+
+      const dx = this.wrapDelta(tx - fx);
+      const dy = this.wrapDelta(ty - fy);
+      const dz = tz - fz;
+      const lenSq = dx * dx + dy * dy + dz * dz;
+
+      if (lenSq > maxLenSq) return false;
+    }
+
+    return true;
+  }
+
+  private chooseSpawnCandidate(candidates: PatternCandidate[]): PatternCandidate | null {
+    const pool = candidates.slice();
+    while (pool.length > 0) {
+      const picked = this.pickCandidateByScore(pool);
+      const def = CONSTELLATION_DEFS[picked.patternIndex];
+      if (this.isSpawnGeometryAcceptable(picked.particleIndices, def)) {
+        return picked;
+      }
+      const removeIdx = pool.indexOf(picked);
+      if (removeIdx >= 0) pool.splice(removeIdx, 1);
+      else pool.pop();
+    }
+    return null;
   }
 
   private isParticleWithinScreenPadding(
@@ -786,14 +846,7 @@ export class ParticleField {
     this.shuffleNumbersInPlace(candidateOrder);
 
     const blockTryCount = Math.min(candidateOrder.length, CLUSTER_BLOCK_TRY_COUNT);
-    const bestMatchByPattern = new Map<
-      number,
-      {
-        patternIndex: number;
-        particleIndices: number[];
-        score: number;
-      }
-    >();
+    const bestMatchByPattern = new Map<number, PatternCandidate>();
 
     for (let bi = 0; bi < blockTryCount; bi++) {
       const block = candidates[candidateOrder[bi]];
@@ -864,7 +917,8 @@ export class ParticleField {
       0,
       Math.min(patternCandidates.length, MATCH_TOP_PATTERN_CHOICES),
     );
-    const selected = this.pickCandidateByScore(topCandidates);
+    const selected = this.chooseSpawnCandidate(topCandidates);
+    if (!selected) return;
 
     const patternIndex = selected.patternIndex;
     const def = CONSTELLATION_DEFS[patternIndex];
@@ -960,6 +1014,22 @@ export class ParticleField {
       const def = CONSTELLATION_DEFS[lc.patternIndex];
       const state = lc.state;
       let dissolvedThisFrame = false;
+      const spawnAge = this.time - lc.formStartTime;
+
+      if (spawnAge < SPAWN_STABILIZE_DURATION && lc.state !== ConstellationState.Fading) {
+        const stabilizeRatio = 1 - spawnAge / SPAWN_STABILIZE_DURATION;
+        const pull = SPAWN_ANCHOR_PULL * stabilizeRatio;
+        for (let i = 0; i < lc.particleIndices.length; i++) {
+          const idx = lc.particleIndices[i];
+          const i3 = idx * 3;
+          this.particlePositions[i3] +=
+            (lc.anchorPositions[i * 3] - this.particlePositions[i3]) * pull;
+          this.particlePositions[i3 + 1] +=
+            (lc.anchorPositions[i * 3 + 1] - this.particlePositions[i3 + 1]) * pull;
+          this.particlePositions[i3 + 2] +=
+            (lc.anchorPositions[i * 3 + 2] - this.particlePositions[i3 + 2]) * pull;
+        }
+      }
 
       // --- State machine ---
 
