@@ -73,6 +73,37 @@ const CONSTELLATION_DEFS: ConstellationDef[] = [
   },
 ];
 
+const PATTERN_SPANS = CONSTELLATION_DEFS.map((def) => {
+  let cx = 0;
+  let cy = 0;
+  for (const [sx, sy] of def.stars) {
+    cx += sx;
+    cy += sy;
+  }
+  cx /= def.stars.length;
+  cy /= def.stars.length;
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [sx, sy] of def.stars) {
+    const x = sx - cx;
+    const y = sy - cy;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return Math.max(maxX - minX, maxY - minY, 1);
+});
+const AVG_PATTERN_SPAN =
+  PATTERN_SPANS.reduce((sum, span) => sum + span, 0) / PATTERN_SPANS.length;
+const PATTERN_STAR_COUNTS = CONSTELLATION_DEFS.map((def) => def.stars.length);
+const AVG_PATTERN_STAR_COUNT =
+  PATTERN_STAR_COUNTS.reduce((sum, count) => sum + count, 0) /
+  PATTERN_STAR_COUNTS.length;
+
 /* ---------- Dynamic constellation types ---------- */
 
 const enum ConstellationState {
@@ -137,6 +168,14 @@ const MATCH_ANGLE_STEPS = 12;
 const MATCH_POOL_MULTIPLIER = 3;
 const MATCH_SCALE_VARIANTS = [0.7, 0.85, 1.0] as const;
 const MATCH_QUALITY_THRESHOLD = 1.15;
+const CLUSTER_BLOCK_TRY_COUNT = 18;
+const ACTIVE_PATTERN_PENALTY = 0.08;
+const PATTERN_COOLDOWN_SECONDS = 12.0;
+const PATTERN_COOLDOWN_PENALTY = 0.14;
+const PATTERN_SPAN_BIAS_POWER = 1.0;
+const PATTERN_COMPLEXITY_BIAS_POWER = 0.5;
+const MATCH_TOP_PATTERN_CHOICES = 4;
+const MATCH_SELECTION_TEMPERATURE = 0.08;
 const SCROLL_LERP = 0.12;
 const SCROLL_DESKTOP_CONFIG: ScrollParallaxConfig = {
   impulse: 0.12,
@@ -203,6 +242,7 @@ export class ParticleField {
   private scrollCurrentPitch = 0;
   private lastScrollY = 0;
   private projectionTemp = new THREE.Vector3();
+  private patternCooldownUntil = new Float32Array(CONSTELLATION_DEFS.length);
 
   constructor(options: ParticleFieldOptions) {
     const isMobile = window.innerWidth < 768;
@@ -368,6 +408,30 @@ export class ParticleField {
       values[i] = values[j];
       values[j] = temp;
     }
+  }
+
+  private pickCandidateByScore<T extends { score: number }>(
+    candidates: T[],
+  ): T {
+    if (candidates.length === 1) return candidates[0];
+
+    const bestScore = candidates[0].score;
+    const weights = new Array<number>(candidates.length);
+    let totalWeight = 0;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const relativeScore = Math.max(candidates[i].score - bestScore, 0);
+      const weight = Math.exp(-relativeScore / MATCH_SELECTION_TEMPERATURE);
+      weights[i] = weight;
+      totalWeight += weight;
+    }
+
+    let pick = Math.random() * totalWeight;
+    for (let i = 0; i < candidates.length; i++) {
+      pick -= weights[i];
+      if (pick <= 0) return candidates[i];
+    }
+    return candidates[candidates.length - 1];
   }
 
   private isParticleWithinScreenPadding(
@@ -716,14 +780,15 @@ export class ParticleField {
     const candidateOrder = Array.from({ length: candidates.length }, (_, i) => i);
     this.shuffleNumbersInPlace(candidateOrder);
 
-    const blockTryCount = Math.min(candidateOrder.length, 10);
-    let bestMatch:
-      | {
-          patternIndex: number;
-          particleIndices: number[];
-          score: number;
-        }
-      | null = null;
+    const blockTryCount = Math.min(candidateOrder.length, CLUSTER_BLOCK_TRY_COUNT);
+    const bestMatchByPattern = new Map<
+      number,
+      {
+        patternIndex: number;
+        particleIndices: number[];
+        score: number;
+      }
+    >();
 
     for (let bi = 0; bi < blockTryCount; bi++) {
       const block = candidates[candidateOrder[bi]];
@@ -742,31 +807,68 @@ export class ParticleField {
         );
         if (!match) continue;
 
-        // Keep variety by slightly penalizing currently reused patterns.
-        const patternReusePenalty = usedPatterns.has(candidatePatternIndex)
-          ? 0.02
-          : 0;
-        const totalScore = match.score + patternReusePenalty;
+        // Bias correction: smaller pattern spans and lower star counts
+        // are naturally easier to fit, so normalize their advantage.
+        const spanNorm =
+          PATTERN_SPANS[candidatePatternIndex] / AVG_PATTERN_SPAN;
+        const spanCorrectedScore =
+          match.score /
+          Math.pow(Math.max(spanNorm, 0.4), PATTERN_SPAN_BIAS_POWER);
+        const complexityRatio =
+          AVG_PATTERN_STAR_COUNT /
+          Math.max(PATTERN_STAR_COUNTS[candidatePatternIndex], 1);
+        const complexityAdjustedScore =
+          spanCorrectedScore *
+          Math.pow(
+            Math.max(complexityRatio, 0.7),
+            PATTERN_COMPLEXITY_BIAS_POWER,
+          );
 
-        if (!bestMatch || totalScore < bestMatch.score) {
-          bestMatch = {
+        let totalScore = complexityAdjustedScore;
+
+        if (usedPatterns.has(candidatePatternIndex)) {
+          totalScore += ACTIVE_PATTERN_PENALTY;
+        }
+
+        const cooldownRemaining =
+          this.patternCooldownUntil[candidatePatternIndex] - this.time;
+        if (cooldownRemaining > 0) {
+          const cooldownRatio = Math.min(
+            cooldownRemaining / PATTERN_COOLDOWN_SECONDS,
+            1,
+          );
+          totalScore += PATTERN_COOLDOWN_PENALTY * cooldownRatio;
+        }
+
+        const prev = bestMatchByPattern.get(candidatePatternIndex);
+        if (!prev || totalScore < prev.score) {
+          bestMatchByPattern.set(candidatePatternIndex, {
             patternIndex: candidatePatternIndex,
             particleIndices: match.particleIndices,
             score: totalScore,
-          };
+          });
         }
       }
-
-      if (bestMatch && bestMatch.score < 0.35) break;
     }
 
-    if (!bestMatch) return;
+    const patternCandidates = Array.from(bestMatchByPattern.values());
+    if (patternCandidates.length === 0) return;
 
-    const patternIndex = bestMatch.patternIndex;
+    patternCandidates.sort((a, b) => a.score - b.score);
+    const topCandidates = patternCandidates.slice(
+      0,
+      Math.min(patternCandidates.length, MATCH_TOP_PATTERN_CHOICES),
+    );
+    const selected = this.pickCandidateByScore(topCandidates);
+
+    const patternIndex = selected.patternIndex;
     const def = CONSTELLATION_DEFS[patternIndex];
     const needed = def.stars.length;
-    const chosen = bestMatch.particleIndices;
+    const chosen = selected.particleIndices;
     if (chosen.length !== needed) return;
+
+    this.patternCooldownUntil[patternIndex] =
+      this.time + PATTERN_COOLDOWN_SECONDS;
 
     // Mark particles as used
     for (const idx of chosen) this.usedParticleSet.add(idx);
