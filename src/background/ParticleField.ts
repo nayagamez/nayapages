@@ -1396,7 +1396,7 @@ export class ParticleField {
   private bindEvents(): void {
     window.addEventListener("mousemove", this.onMouseMove);
     window.addEventListener("touchstart", this.onTouchStart, { passive: true });
-    window.addEventListener("touchmove", this.onTouchMove, { passive: false });
+    window.addEventListener("touchmove", this.onTouchMove, { passive: true });
     window.addEventListener("touchend", this.onTouchEnd, { passive: true });
     window.addEventListener("touchcancel", this.onTouchEnd, { passive: true });
     window.addEventListener("scroll", this.onScroll, { passive: true });
@@ -1441,9 +1441,6 @@ export class ParticleField {
     if (!touch) return;
     this.touchActive = true;
     this.activeTouchId = touch.identifier;
-    // During drag interaction, keep touch movement as pointer input
-    // instead of letting page scroll consume the gesture.
-    e.preventDefault();
     this.setPointerTarget(touch.clientX, touch.clientY);
   };
 
